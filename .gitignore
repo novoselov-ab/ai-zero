@@ -1,32 +1,67 @@
-# Prerequisites
-*.d
+# Ignore all files by default, but scan all directories
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+*
+!*/
 
-# Precompiled Headers
-*.gch
-*.pch
+# C/C++ source files
+!*.c
+!*.cc
+!*.cpp
+!*.cpp.template
+!*.h
+!*.h.template
+!*.hpp
+!*.inl
+!*.inc
+!*.m
+!*.mm
+!*.rc
+!*.rc2
+!*.def
+!*.exp
+!*.manifest
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Text files
+!*.txt
+!*.md
 
-# Fortran module files
-*.mod
-*.smod
+# Other configuration and markup files
+!*.ini
+!*.json
+!*.xml
+!*.config
+!.git*
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+# Projects and makefiles
+!*.cmake
+!*.vcproj
+!*.vcxproj
+!*.vcxproj.filters
+!*.sln
+!*.vsprops
+!*.snippet
+!Makefile
+!Makefile.*
 
-# Executables
-*.exe
-*.out
-*.app
+# Specific names
+!README
+!AUTHORS
+!LICENSE
+!FAQ
+!VERSION
+!ChangeLog
+
+# Ignore Unix backup files
+*~
+
+# Exceptions
+/*.sln
+/*.xcodeproj
+/Makefile
+/CMakeLists.txt
+*.target.xml
+*.exe.config
+*.exe.manifest
+/.kdev4/
+/UE4CodeCompletionFolders.txt
+/UE4CodeLitePreProcessor.txt

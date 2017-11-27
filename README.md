@@ -1,1 +1,3 @@
-# ai
+# AI-Zero
+
+WIP
