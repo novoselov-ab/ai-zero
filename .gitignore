@@ -33,15 +33,13 @@
 !.git*
 
 # Projects and makefiles
-!*.cmake
-!*.vcproj
-!*.vcxproj
-!*.vcxproj.filters
-!*.sln
-!*.vsprops
-!*.snippet
-!Makefile
-!Makefile.*
+/build
+!/build/*.vcproj
+!/build/*.vcxproj
+!/build/*.vcxproj.filters
+!/build/*.sln
+!/build/*.vsprops
+!/build/*.snippet
 
 # Specific names
 !README
@@ -53,15 +51,3 @@
 
 # Ignore Unix backup files
 *~
-
-# Exceptions
-/*.sln
-/*.xcodeproj
-/Makefile
-/CMakeLists.txt
-*.target.xml
-*.exe.config
-*.exe.manifest
-/.kdev4/
-/UE4CodeCompletionFolders.txt
-/UE4CodeLitePreProcessor.txt
