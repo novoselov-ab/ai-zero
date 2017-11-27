@@ -3,4 +3,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\examples\gradient-check\main.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\include\ai.h" />
+  </ItemGroup>
 </Project>

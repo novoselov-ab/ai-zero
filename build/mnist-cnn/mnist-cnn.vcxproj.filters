@@ -3,4 +3,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\examples\mnist-cnn\main.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\include\ai.h" />
+  </ItemGroup>
 </Project>
