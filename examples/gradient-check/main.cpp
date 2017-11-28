@@ -55,8 +55,9 @@ int main()
 	nn.addConv(1, 3, 3, 1, 1);
 	nn.addDense(3);
 	nn.addDense(3);
-	nn.addDense(1);
-	nn.addRegression();
+	nn.addDense(2);
+	nn.addSoftmax();
+	nn.setLoss(std::make_shared<CrossEntropy>());
 
 	Tensor input; 
 	input.initRand({ 4, 4, 1 });
@@ -71,8 +72,8 @@ int main()
 	t.init(&nn);
 	
 	Tensor output;
-	output.init({ 1, 1, 1 });
-	output.data = { 0 };
+	output.init({ 1, 1, 2 });
+	output.data = { 0, 1 };
 
 	gradientCheck(nn, input, output);
 

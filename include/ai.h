@@ -115,7 +115,6 @@ public:
 	virtual void initialize(Dim inDim) = 0;
 	virtual void forward(const Tensor& inAct) = 0;
 	virtual void backward(const Tensor& inAct, const Tensor& inGrad) = 0;
-	virtual float calcLoss(const Tensor& y) { return 0.f; }
 	virtual void fillOptimizationData(std::vector<OptimizationData>& data) {};
 
 	virtual ~Layer() {}
@@ -384,64 +383,81 @@ public:
 
 	void backward(const Tensor& inAct, const Tensor& inGrad) override
 	{
-		uint32_t index = std::distance(inGrad.data.begin(), std::max_element(inGrad.data.begin(), inGrad.data.end()));
 		for (uint32_t i = 0; i < outDim.depth; i++)
 		{
-			float indicator = (index == i) ? 1.f : 0.f;
-			outGrad.data[i] = -(indicator - outAct.data[i]);
+			outGrad.data[i] = 0.f;
+			for (uint32_t k = 0; k < outDim.depth; k++)
+			{
+				const float df = (k == i) ? outAct.data[i] * (1.f - outAct.data[i]) : -outAct.data[k] * outAct.data[i];
+				outGrad.data[i] += inGrad.data[k] * df;
+			}
 		}
-	}
-
-	float calcLoss(const Tensor& y) override
-	{
-		uint32_t index = std::distance(y.data.begin(), std::max_element(y.data.begin(), y.data.end()));
-		return (-std::log(outAct.data[index])); // not sure here
 	}
 };
 
-class Regression : public Layer
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//														Loss
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct Loss
 {
-public:
-	Regression()
-	{
-	}
+	virtual float f(const Tensor& x, const Tensor& y) const = 0;
+	virtual void df(Tensor& grad, const Tensor& x, const Tensor& y) const = 0;
+};
 
-	void initialize(Dim inDim) override
-	{
-		outDim = { 1, 1, inDim.size() };
-		outAct.init(outDim);
-		outGrad.init(inDim);
-	}
-
-	void forward(const Tensor& inAct) override
-	{
-		for (uint32_t i = 0; i < outDim.depth; i++)
-		{
-			outAct.data[i] = inAct.data[i];
-		}
-	}
-
-	void backward(const Tensor& inAct, const Tensor& inGrad) override
-	{
-		const float factor = 2.f / outDim.depth;
-		for (uint32_t i = 0; i < outDim.depth; i++)
-		{
-			float dy = (outAct.data[i] - inGrad.data[i]);
-			outGrad.data[i] = factor * dy;
-		}
-	}
-
-	float calcLoss(const Tensor& y) override
+struct MSE : public Loss
+{
+	virtual float f(const Tensor& x, const Tensor& y) const override
 	{
 		float loss = 0.f;
-		for (uint32_t i = 0; i < outDim.depth; i++)
+		const uint32_t n = x.dim.size();
+		for (uint32_t i = 0; i < n; i++)
 		{
-			float dy = (outAct.data[i] - y.data[i]);
+			float dy = (x.data[i] - y.data[i]);
 			loss += dy * dy;
 		}
-		loss /= outDim.depth;
+		loss /= n;
+	
 		return loss;
 	}
+
+	virtual void df(Tensor& grad, const Tensor& x, const Tensor& y) const override
+	{
+		const uint32_t n = x.dim.size();
+		const float factor = 2.f / n;
+		for (uint32_t i = 0; i < n; i++)
+		{
+			float dy = (x.data[i] - y.data[i]);
+			grad.data[i] = factor * dy;
+		}
+	}
+
+};
+
+struct CrossEntropy : public Loss
+{
+	virtual float f(const Tensor& x, const Tensor& y) const override
+	{
+		float loss = 0.f;
+		const uint32_t n = x.dim.size();
+		for (uint32_t i = 0; i < n; i++)
+		{
+			loss += -y.data[i] * std::log(x.data[i]) - (1.f - y.data[i]) * std::log((1.f - x.data[i]));
+		}
+
+		return loss;
+	}
+
+	virtual void df(Tensor& grad, const Tensor& x, const Tensor& y) const override
+	{
+		const uint32_t n = x.dim.size();
+		for (uint32_t i = 0; i < n; i++)
+		{
+			grad.data[i] = (x.data[i] - y.data[i]) / (x.data[i] * (1.f - x.data[i]));
+		}
+	}
+
 };
 
 
@@ -452,6 +468,9 @@ public:
 class NN
 {
 public:
+	NN() : m_loss(std::make_shared<MSE>())
+	{
+	}
 
 	~NN()
 	{
@@ -484,13 +503,17 @@ public:
 
 	float forward(const Tensor& x, const Tensor& y)
 	{
-		forward(x);
-		return m_layers.back()->calcLoss(y); // assume last
+		const Tensor& act = forward(x);
+		return m_loss->f(act, y);
 	}
 
 	const Tensor& backward(const Tensor& x, const Tensor& y)
 	{
-		const Tensor* inGrad = &y;
+		assert(m_layers.size());
+		const auto lastLayer = m_layers.back();
+		m_lossGrad.init(lastLayer->outAct.dim);
+		m_loss->df(m_lossGrad, lastLayer->outAct, y);
+		const Tensor* inGrad = &m_lossGrad;
 		for (int i = m_layers.size() - 1; i >= 0; i--)
 		{
 			const Tensor* inAct = (i > 0 ? &m_layers[i - 1]->outAct : &x);
@@ -520,9 +543,9 @@ public:
 		m_layers.push_back(new Softmax());
 	}
 
-	void addRegression()
+	void setLoss(std::shared_ptr<Loss> loss)
 	{
-		m_layers.push_back(new Regression());
+		m_loss = loss;
 	}
 
 	void fillOptimizationData(std::vector<OptimizationData>& data)
@@ -535,6 +558,8 @@ public:
 
 private:
 	std::vector<Layer*> m_layers;
+	std::shared_ptr<Loss> m_loss;
+	Tensor				  m_lossGrad;
 };
 
 std::ostream& operator<<(std::ostream& os, const std::vector<float>& v)
