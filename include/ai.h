@@ -88,6 +88,16 @@ struct Tensor
 		return os;
 	}
 
+	float& operator[](size_t idx) 
+	{ 
+		return data[idx]; 
+	}
+	
+	const float& operator[](size_t idx) const 
+	{ 
+		return data[idx]; 
+	}
+
 	Dim dim;
 	std::vector<float> data;
 };
@@ -108,13 +118,12 @@ struct OptimizationData
 class Layer
 {
 public:
-	Dim outDim;
-	Tensor outAct;
-	Tensor outGrad;
+	Tensor Y;
+	Tensor dX;
 
 	virtual void initialize(Dim inDim) = 0;
-	virtual void forward(const Tensor& inAct) = 0;
-	virtual void backward(const Tensor& inAct, const Tensor& inGrad) = 0;
+	virtual void forward(const Tensor& X) = 0;
+	virtual void backward(const Tensor& X, const Tensor& dY) = 0;
 	virtual void fillOptimizationData(std::vector<OptimizationData>& data) {};
 
 	virtual ~Layer() {}
@@ -147,9 +156,7 @@ class Dense : public DotLayer
 public:
 	Dense(uint32_t n)
 	{
-		outDim = { 1, 1, n };
-
-		outAct.init({ 1, 1, outDim.depth });
+		Y.init({ 1, 1, n });
 		m_filters.resize(n);
 		m_filtersGrad.resize(n);
 		m_biases.initRand({ 1, 1, n });
@@ -158,41 +165,41 @@ public:
 
 	void initialize(Dim inDim) override
 	{
-		outGrad.init(inDim);
+		dX.init(inDim);
 		for (auto& f : m_filters)
 			f.initRand({ 1, 1, inDim.size() });
 		for (auto& f : m_filtersGrad)
 			f.init({ 1, 1, inDim.size() });
 	}
 
-	void forward(const Tensor& inAct) override
+	void forward(const Tensor& X) override
 	{
-		for (uint32_t i = 0; i < outDim.depth; i++)
+		for (uint32_t i = 0; i < Y.dim.depth; i++)
 		{
 			float a = 0.f;
 			const auto& f = m_filters[i];
 			for (uint32_t k = 0; k < f.dim.depth; k++)
 			{
-				a += inAct.data[k] * f.data[k];
+				a += X[k] * f[k];
 			}
-			a += m_biases.data[i];
-			outAct.data[i] = a;
+			a += m_biases[i];
+			Y[i] = a;
 		}
 	}
 
-	void backward(const Tensor& inAct, const Tensor& inGrad) override
+	void backward(const Tensor& X, const Tensor& dY) override
 	{
-		outGrad.setZero();
-		for (uint32_t i = 0; i < outDim.depth; i++)
+		dX.setZero();
+		for (uint32_t i = 0; i < Y.dim.depth; i++)
 		{
 			const auto& f = m_filters[i];
 			auto& fg = m_filtersGrad[i];
 			for (uint32_t k = 0; k < f.dim.depth; k++)
 			{
-				outGrad.data[k] += f.data[k] * inGrad.data[i];
-				fg.data[k] += inAct.data[k] * inGrad.data[i];
+				dX[k] += f[k] * dY[i];
+				fg[k] += X[k] * dY[i];
 			}
-			m_biasesGrad.data[i] += inGrad.data[i];
+			m_biasesGrad[i] += dY[i];
 		}
 	}
 };
@@ -203,24 +210,27 @@ class Conv : public DotLayer
 public:
 	Conv(uint32_t filters, uint32_t kernel_x, uint32_t kernel_y, uint32_t stride, uint32_t pad)
 	{
-		outDim.depth = filters;
+		m_filterCount = filters;
 		m_ksx = kernel_x;
 		m_ksy = kernel_y;
 		m_stride = stride;
 		m_pad = pad;
+	}
+
+	void initialize(Dim inDim) override
+	{
+		Dim outDim;
+		outDim.depth = m_filterCount;
+		outDim.sx = (uint32_t)std::floor(((float)inDim.sx + m_pad * 2 - m_ksx) / m_stride + 1);
+		outDim.sy = (uint32_t)std::floor(((float)inDim.sy + m_pad * 2 - m_ksy) / m_stride + 1);
+
+		Y.init(outDim);
+		dX.init(inDim);
 
 		m_filters.resize(outDim.depth);
 		m_filtersGrad.resize(outDim.depth);
 		m_biases.initRand({ 1, 1, outDim.depth });
 		m_biasesGrad.init({ 1, 1, outDim.depth });
-	}
-
-	void initialize(Dim inDim) override
-	{
-		outDim.sx = (uint32_t)std::floor(((float)inDim.sx + m_pad * 2 - m_ksx) / m_stride + 1);
-		outDim.sy = (uint32_t)std::floor(((float)inDim.sy + m_pad * 2 - m_ksy) / m_stride + 1);
-		outAct.init(outDim);
-		outGrad.init(inDim);
 
 		for (auto& f : m_filters)
 			f.initRand({ m_ksx, m_ksy, inDim.depth });
@@ -228,18 +238,18 @@ public:
 			f.init({ m_ksx, m_ksy, inDim.depth });
 	}
 
-	void forward(const Tensor& inAct) override
+	void forward(const Tensor& X) override
 	{
-		const int in_sx = inAct.dim.sx;
-		const int in_sy = inAct.dim.sy;
-		for (uint32_t d = 0; d < outDim.depth; d++)
+		const int in_sx = X.dim.sx;
+		const int in_sy = X.dim.sy;
+		for (uint32_t d = 0; d < Y.dim.depth; d++)
 		{
 			const Tensor& f = m_filters[d];
 			int y = -m_pad;
-			for (uint32_t ay = 0; ay < outDim.sy; ay++)
+			for (uint32_t ay = 0; ay < Y.dim.sy; ay++)
 			{
 				int x = -m_pad;
-				for (uint32_t ax = 0; ax < outDim.sx; ax++)
+				for (uint32_t ax = 0; ax < Y.dim.sx; ax++)
 				{
 					float a = .0f;
 
@@ -253,15 +263,15 @@ public:
 							{
 								for (uint32_t fd = 0; fd < f.dim.depth; fd++)
 								{
-									a += f.get(fx, fy, fd) * inAct.get(ox, oy, fd);
+									a += f.get(fx, fy, fd) * X.get(ox, oy, fd);
 								}
 							}
 
 						}
 					}
 
-					a += m_biases.data[d];
-					outAct.set(ax, ay, d, a);
+					a += m_biases[d];
+					Y.set(ax, ay, d, a);
 
 					x += m_stride;
 				}
@@ -270,23 +280,23 @@ public:
 		}
 	}
 
-	void backward(const Tensor& inAct, const Tensor& inGrad) override
+	void backward(const Tensor& X, const Tensor& dY) override
 	{
-		outGrad.setZero();
+		dX.setZero();
 
-		const int in_sx = inAct.dim.sx;
-		const int in_sy = inAct.dim.sy;
-		for (uint32_t d = 0; d < outDim.depth; d++)
+		const int in_sx = X.dim.sx;
+		const int in_sy = X.dim.sy;
+		for (uint32_t d = 0; d < Y.dim.depth; d++)
 		{
 			const Tensor& f = m_filters[d];
 			Tensor& fg = m_filtersGrad[d];
 			int y = -m_pad;
-			for (uint32_t ay = 0; ay < outDim.sy; ay++)
+			for (uint32_t ay = 0; ay < Y.dim.sy; ay++)
 			{
 				int x = -m_pad;
-				for (uint32_t ax = 0; ax < outDim.sx; ax++)
+				for (uint32_t ax = 0; ax < Y.dim.sx; ax++)
 				{
-					float chain_grad = inGrad.get(ax, ay, d);
+					float chain_grad = dY.get(ax, ay, d);
 					for (uint32_t fy = 0; fy < fg.dim.sy; fy++)
 					{
 						int oy = y + fy;
@@ -297,13 +307,13 @@ public:
 							{
 								for (uint32_t fd = 0; fd < fg.dim.depth; fd++)
 								{
-									fg.add(fx, fy, fd, (inAct.get(ox, oy, fd) * chain_grad));
-									outGrad.add(ox, oy, fd, (f.get(fx, fy, fd) * chain_grad));
+									fg.add(fx, fy, fd, (X.get(ox, oy, fd) * chain_grad));
+									dX.add(ox, oy, fd, (f.get(fx, fy, fd) * chain_grad));
 								}
 							}
 						}
 					}
-					m_biasesGrad.data[d] += chain_grad;
+					m_biasesGrad[d] += chain_grad;
 
 					x += m_stride;
 				}
@@ -313,6 +323,7 @@ public:
 	}
 
 private:
+	uint32_t m_filterCount;
 	uint32_t m_ksx;
 	uint32_t m_ksy;
 	uint32_t m_stride;
@@ -324,24 +335,23 @@ class Relu : public Layer
 public:
 	void initialize(Dim inDim) override
 	{
-		outDim = inDim;
-		outAct.init(outDim);
-		outGrad.init(inDim);
+		Y.init(inDim);
+		dX.init(inDim);
 	}
 
-	void forward(const Tensor& inAct) override
+	void forward(const Tensor& X) override
 	{
-		for (uint32_t i = 0; i < outDim.size(); i++)
+		for (uint32_t i = 0; i < Y.dim.size(); i++)
 		{
-			outAct.data[i] = inAct.data[i] < 0 ? 0 : inAct.data[i];
+			Y[i] = X[i] < 0 ? 0 : X[i];
 		}
 	}
 
-	void backward(const Tensor& inAct, const Tensor& inGrad) override
+	void backward(const Tensor& X, const Tensor& dY) override
 	{
-		for (uint32_t i = 0; i < outDim.size(); i++)
+		for (uint32_t i = 0; i < Y.dim.size(); i++)
 		{
-			outGrad.data[i] = outAct.data[i] <= 0 ? 0 : inGrad.data[i];
+			dX[i] = Y[i] <= 0 ? 0 : dY[i];
 		}
 	}
 };
@@ -355,41 +365,40 @@ public:
 
 	void initialize(Dim inDim) override
 	{
-		outDim = { 1, 1, inDim.size() };
-		outAct.init(outDim);
-		outGrad.init(inDim);
+		Y.init(inDim);
+		dX.init(inDim);
 	}
 
-	void forward(const Tensor& inAct) override
+	void forward(const Tensor& X) override
 	{
 		// max act
-		float amax = *std::max_element(inAct.data.begin(), inAct.data.end());
+		float amax = *std::max_element(X.data.begin(), X.data.end());
 
 		// compute exp
 		float esum = 0.f;
-		for (uint32_t i = 0; i < outDim.depth; i++)
+		for (uint32_t i = 0; i < Y.dim.depth; i++)
 		{
-			const float e = std::exp(inAct.data[i] - amax);
+			const float e = std::exp(X[i] - amax);
 			esum += e;
-			outAct.data[i] = e;
+			Y[i] = e;
 		}
 
 		// norm
-		for (uint32_t i = 0; i < outDim.depth; i++)
+		for (uint32_t i = 0; i < Y.dim.depth; i++)
 		{
-			outAct.data[i] /= esum;
+			Y[i] /= esum;
 		}
 	}
 
-	void backward(const Tensor& inAct, const Tensor& inGrad) override
+	void backward(const Tensor& X, const Tensor& dY) override
 	{
-		for (uint32_t i = 0; i < outDim.depth; i++)
+		for (uint32_t i = 0; i < Y.dim.depth; i++)
 		{
-			outGrad.data[i] = 0.f;
-			for (uint32_t k = 0; k < outDim.depth; k++)
+			dX[i] = 0.f;
+			for (uint32_t k = 0; k < Y.dim.depth; k++)
 			{
-				const float df = (k == i) ? outAct.data[i] * (1.f - outAct.data[i]) : -outAct.data[k] * outAct.data[i];
-				outGrad.data[i] += inGrad.data[k] * df;
+				const float df = (k == i) ? Y[i] * (1.f - Y[i]) : -Y[k] * Y[i];
+				dX[i] += dY[k] * df;
 			}
 		}
 	}
@@ -402,19 +411,19 @@ public:
 
 struct Loss
 {
-	virtual float f(const Tensor& x, const Tensor& y) const = 0;
-	virtual void df(Tensor& grad, const Tensor& x, const Tensor& y) const = 0;
+	virtual float f(const Tensor& X, const Tensor& Y) const = 0;
+	virtual void df(Tensor& dX, const Tensor& X, const Tensor& Y) const = 0;
 };
 
 struct MSE : public Loss
 {
-	virtual float f(const Tensor& x, const Tensor& y) const override
+	virtual float f(const Tensor& X, const Tensor& Y) const override
 	{
 		float loss = 0.f;
-		const uint32_t n = x.dim.size();
+		const uint32_t n = X.dim.size();
 		for (uint32_t i = 0; i < n; i++)
 		{
-			float dy = (x.data[i] - y.data[i]);
+			float dy = (X[i] - Y[i]);
 			loss += dy * dy;
 		}
 		loss /= n;
@@ -422,14 +431,14 @@ struct MSE : public Loss
 		return loss;
 	}
 
-	virtual void df(Tensor& grad, const Tensor& x, const Tensor& y) const override
+	virtual void df(Tensor& dX, const Tensor& X, const Tensor& Y) const override
 	{
-		const uint32_t n = x.dim.size();
+		const uint32_t n = X.dim.size();
 		const float factor = 2.f / n;
 		for (uint32_t i = 0; i < n; i++)
 		{
-			float dy = (x.data[i] - y.data[i]);
-			grad.data[i] = factor * dy;
+			float dy = (X[i] - Y[i]);
+			dX[i] = factor * dy;
 		}
 	}
 
@@ -437,24 +446,24 @@ struct MSE : public Loss
 
 struct CrossEntropy : public Loss
 {
-	virtual float f(const Tensor& x, const Tensor& y) const override
+	virtual float f(const Tensor& X, const Tensor& Y) const override
 	{
 		float loss = 0.f;
-		const uint32_t n = x.dim.size();
+		const uint32_t n = X.dim.size();
 		for (uint32_t i = 0; i < n; i++)
 		{
-			loss += -y.data[i] * std::log(x.data[i]) - (1.f - y.data[i]) * std::log((1.f - x.data[i]));
+			loss += -Y[i] * std::log(X[i]) - (1.f - Y[i]) * std::log((1.f - X[i]));
 		}
 
 		return loss;
 	}
 
-	virtual void df(Tensor& grad, const Tensor& x, const Tensor& y) const override
+	virtual void df(Tensor& dX, const Tensor& X, const Tensor& Y) const override
 	{
-		const uint32_t n = x.dim.size();
+		const uint32_t n = X.dim.size();
 		for (uint32_t i = 0; i < n; i++)
 		{
-			grad.data[i] = (x.data[i] - y.data[i]) / (x.data[i] * (1.f - x.data[i]));
+			dX[i] = (X[i] - Y[i]) / (X[i] * (1.f - X[i]));
 		}
 	}
 
@@ -486,41 +495,46 @@ public:
 		for (uint32_t i = 0; i < m_layers.size(); i++)
 		{
 			m_layers[i]->initialize(prevDim);
-			prevDim = m_layers[i]->outDim;
+			prevDim = m_layers[i]->Y.dim;
 		}
 	}
 
-	const Tensor& forward(const Tensor& x)
+	const Tensor& forward(const Tensor& X)
 	{
-		const Tensor* inAct = &x;
+		const Tensor* cur_X = &X;
 		for (uint32_t i = 0; i < m_layers.size(); i++)
 		{
-			m_layers[i]->forward(*inAct);
-			inAct = &m_layers[i]->outAct;
+			m_layers[i]->forward(*cur_X);
+			cur_X = &m_layers[i]->Y;
 		}
-		return *inAct;
+		return *cur_X;
 	}
 
-	float forward(const Tensor& x, const Tensor& y)
+	float forward(const Tensor& X, const Tensor& Y)
 	{
-		const Tensor& act = forward(x);
-		return m_loss->f(act, y);
+		const Tensor& act = forward(X);
+		return m_loss->f(act, Y);
 	}
 
-	const Tensor& backward(const Tensor& x, const Tensor& y)
+	const Tensor& backward(const Tensor& X, const Tensor& Y)
 	{
 		assert(m_layers.size());
 		const auto lastLayer = m_layers.back();
-		m_lossGrad.init(lastLayer->outAct.dim);
-		m_loss->df(m_lossGrad, lastLayer->outAct, y);
-		const Tensor* inGrad = &m_lossGrad;
+		m_lossGrad.init(lastLayer->Y.dim);
+		m_loss->df(m_lossGrad, lastLayer->Y, Y);
+		const Tensor* cur_dX = &m_lossGrad;
 		for (int i = m_layers.size() - 1; i >= 0; i--)
 		{
-			const Tensor* inAct = (i > 0 ? &m_layers[i - 1]->outAct : &x);
-			m_layers[i]->backward(*inAct, *inGrad);
-			inGrad = &m_layers[i]->outGrad;
+			const Tensor* cur_X = (i > 0 ? &m_layers[i - 1]->Y : &X);
+			m_layers[i]->backward(*cur_X, *cur_dX);
+			cur_dX = &m_layers[i]->dX;
 		}
-		return *inGrad;
+		return *cur_dX;
+	}
+
+	void addLayer(std::shared_ptr<Layer> layer)
+	{
+
 	}
 
 	void addDense(uint32_t n)
@@ -609,10 +623,10 @@ public:
 		}
 	}
 
-	void train(const Tensor& x, const Tensor& y)
+	void train(const Tensor& X, const Tensor& Y)
 	{
-		float cost_loss = m_net->forward(x, y);
-		m_net->backward(x, y);
+		float cost_loss = m_net->forward(X, Y);
+		m_net->backward(X, Y);
 		m_lossAcc += cost_loss;
 
 		m_iter++;

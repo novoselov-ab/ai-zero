@@ -33,6 +33,7 @@ int main()
 	nn.addDense(128);
 	nn.addDense(10);
 	nn.addSoftmax();
+	nn.setLoss(std::make_shared<CrossEntropy>());
 
 	nn.initialize({ 28, 28, 1 });
 
