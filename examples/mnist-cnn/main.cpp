@@ -31,10 +31,9 @@ int main()
 	x = (*make_shared<Relu>())(x);
 	x = (*make_shared<Dense>(128))(x);
 	x = (*make_shared<Dense>(10))(x);
-	auto output = make_shared<Softmax>();
+	auto output = (*make_shared<Softmax>())(x);
 	auto loss = make_shared<CrossEntropy>();
-	x = (*output)(x);
-	x = (*loss)(x);
+	x = (*loss)(output);
 
 	Model model({ input }, { loss });
 
@@ -85,7 +84,7 @@ int main()
 	};
 
 	const int epochs = 100;
-	const int epochSize = 1000;
+	const int epochSize = 400;
 	int epoch = 0;
 	for (int epoch = 0; epoch < epochs; epoch++)
 	{
@@ -99,7 +98,7 @@ int main()
 			imageToTensorFn(image, X);
 			Tensor Y;
 			labelToOneHot(dataset.training_labels[index], Y);
-			t.train({ X }, { Y });
+			t.train(X, Y);
 		}
 		auto epochTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 		std::cout << "EpochTime (ms):" << epochTime.count() << "\n";
