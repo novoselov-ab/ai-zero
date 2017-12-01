@@ -4,10 +4,10 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <map>
 #include <random>
 #include <iostream>
 #include <cassert>
-#include <iostream>
 #include <chrono>
 #include <future>
 
@@ -15,6 +15,7 @@
 //														Common
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+using namespace std;
 std::default_random_engine g_randomGen;
 
 struct Dim
@@ -26,6 +27,11 @@ struct Dim
 	uint32_t size() const
 	{
 		return sx * sy * depth;
+	}
+
+	bool operator==(const Dim& other) const
+	{
+		return sx == other.sx && sy == other.sy && depth == other.depth;
 	}
 };
 
@@ -98,10 +104,28 @@ struct Tensor
 		return data[idx]; 
 	}
 
+	Tensor& operator+=(const Tensor& t)
+	{
+		assert(t.dim == dim);
+		for (uint32_t i = 0; i < data.size(); i++)
+			data[i] += t.data[i];
+		return *this;
+	}
+
 	Dim dim;
-	std::vector<float> data;
+	vector<float> data;
 };
 
+std::ostream& operator<<(std::ostream& os, const vector<float>& v)
+{
+	os << "[";
+	for (auto x : v)
+	{
+		os << x << ",";
+	}
+	os << "]\n";
+	return os;
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //														Layers
@@ -109,33 +133,152 @@ struct Tensor
 
 struct OptimizationData
 {
-	std::vector<float>& theta;
-	std::vector<float>& dtheta;
+	vector<float>& theta;
+	vector<float>& dtheta;
 	float l1;
 	float l2;
 };
 
-class Layer
+class Layer : public std::enable_shared_from_this<Layer>
 {
 public:
 	Tensor Y;
 	Tensor dX;
 
-	virtual void initialize(Dim inDim) = 0;
-	virtual void forward(const Tensor& X) = 0;
-	virtual void backward(const Tensor& X, const Tensor& dY) = 0;
-	virtual void fillOptimizationData(std::vector<OptimizationData>& data) {};
+	vector<shared_ptr<Layer>> inputs;
+	vector<weak_ptr<Layer>> outputs;
+
+	shared_ptr<Layer> operator()(shared_ptr<Layer> inputLayer)
+	{
+		return link(inputLayer);
+	}
+
+	shared_ptr<Layer> operator()(initializer_list<shared_ptr<Layer>> inputLayers)
+	{
+		return link(inputLayers);
+	}
+
+	shared_ptr<Layer> link(shared_ptr<Layer> inputLayer)
+	{
+		linkImpl(inputLayer);
+		return shared_from_this();
+	}
+
+	shared_ptr<Layer> link(initializer_list<shared_ptr<Layer>> inputLayers)
+	{
+		for (auto l : inputLayers)
+			linkImpl(l);
+		return shared_from_this();
+	}
+
+	virtual void forward() = 0;
+	virtual void backward() = 0;
+
+	virtual void fillOptimizationData(vector<OptimizationData>& data) {};
 
 	virtual ~Layer() {}
+
+protected:
+	virtual void initialize(Dim inDim) = 0;
+
+private:
+
+	void linkImpl(shared_ptr<Layer> inputLayer)
+	{
+		assert(inputLayer->Y.dim.size() > 0);
+		assert(!inputs.empty() ? (inputs.back()->Y.dim == inputLayer->Y.dim) : true);
+		inputs.push_back(inputLayer);
+		inputLayer->outputs.push_back(shared_from_this());
+
+		initialize(inputLayer->Y.dim);
+	}
 };
 
-class DotLayer : public Layer
+class SingleInputLayer : public Layer
+{
+public:
+	virtual void forward() override
+	{
+		assert(inputs.size() <= 1);
+		if (inputs.size() > 0)
+		{
+			forward(inputs[0]->Y);
+		}
+		else
+		{
+			Tensor empty;
+			forward(empty);
+		}
+	}
+
+	virtual void backward() override
+	{
+		Tensor empty;
+		if (inputs.size() > 0)
+		{
+			const Tensor* X = inputs.size() > 0 ? &inputs[0].get()->Y : &empty;
+			if (outputs.size() > 0)
+			{
+				const Tensor* dY = nullptr;
+				if (outputs.size() > 1)
+				{
+					m_dY.init(outputs[0].lock().get()->dX.dim);
+					m_dY.setZero();
+					for (auto o : outputs)
+					{
+						const auto& dX = o.lock().get()->dX;
+						m_dY += dX;
+					}
+					dY = &m_dY;
+				}
+				else
+				{
+					dY = &outputs[0].lock()->dX;
+				}
+				backward(*X, *dY);
+			}
+			else
+			{
+				backward(*X, empty);
+			}
+		}
+	}
+
+	virtual void forward(const Tensor& X) = 0;
+	virtual void backward(const Tensor& X, const Tensor& dY) = 0;
+
+private:
+	Tensor m_dY;
+};
+
+class Input : public SingleInputLayer
+{
+public:
+	Input(Dim inDim)
+	{
+		Y.init(inDim);
+		dX.init(inDim);
+	}
+
+	void initialize(Dim inDim) override {}
+
+	void forward(const Tensor& X) override
+	{
+	}
+
+	void backward(const Tensor& X, const Tensor& dY) override
+	{
+		dX = dY;
+	}
+};
+
+class DotLayer : public SingleInputLayer
 {
 public:
 	float l1 = 0.f;
 	float l2 = 1.f;
 
-	void fillOptimizationData(std::vector<OptimizationData>& data) override
+	void fillOptimizationData(vector<OptimizationData>& data) override
 	{
 		for (uint32_t i = 0; i < m_filters.size(); i++)
 		{
@@ -145,8 +288,8 @@ public:
 	}
 
 protected:
-	std::vector<Tensor> m_filters;
-	std::vector<Tensor> m_filtersGrad;
+	vector<Tensor> m_filters;
+	vector<Tensor> m_filtersGrad;
 	Tensor m_biases;
 	Tensor m_biasesGrad;
 };
@@ -203,7 +346,6 @@ public:
 		}
 	}
 };
-
 
 class Conv : public DotLayer
 {
@@ -330,7 +472,7 @@ private:
 	int m_pad;
 };
 
-class Relu : public Layer
+class Relu : public SingleInputLayer
 {
 public:
 	void initialize(Dim inDim) override
@@ -356,13 +498,9 @@ public:
 	}
 };
 
-class Softmax : public Layer
+class Softmax : public SingleInputLayer
 {
 public:
-	Softmax()
-	{
-	}
-
 	void initialize(Dim inDim) override
 	{
 		Y.init(inDim);
@@ -409,183 +547,185 @@ public:
 //														Loss
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct Loss
+class LossLayer : public SingleInputLayer
 {
-	virtual float f(const Tensor& X, const Tensor& Y) const = 0;
-	virtual void df(Tensor& dX, const Tensor& X, const Tensor& Y) const = 0;
+public:
+	Tensor T; // Target (Label)
+
+	void initialize(Dim inDim) override
+	{
+		Y.init({1,1,1});
+		dX.init(inDim);
+		T.init(inDim);
+	}
 };
 
-struct MSE : public Loss
+struct MSE : public LossLayer
 {
-	virtual float f(const Tensor& X, const Tensor& Y) const override
+	void forward(const Tensor& X) override
 	{
 		float loss = 0.f;
 		const uint32_t n = X.dim.size();
 		for (uint32_t i = 0; i < n; i++)
 		{
-			float dy = (X[i] - Y[i]);
+			float dy = (X[i] - T[i]);
 			loss += dy * dy;
 		}
 		loss /= n;
 	
-		return loss;
+		Y[0] = loss;
 	}
 
-	virtual void df(Tensor& dX, const Tensor& X, const Tensor& Y) const override
+	void backward(const Tensor& X, const Tensor& dY) override
 	{
 		const uint32_t n = X.dim.size();
 		const float factor = 2.f / n;
 		for (uint32_t i = 0; i < n; i++)
 		{
-			float dy = (X[i] - Y[i]);
+			float dy = (X[i] - T[i]);
 			dX[i] = factor * dy;
 		}
 	}
-
 };
 
-struct CrossEntropy : public Loss
+struct CrossEntropy : public LossLayer
 {
-	virtual float f(const Tensor& X, const Tensor& Y) const override
+	void forward(const Tensor& X) override
 	{
 		float loss = 0.f;
 		const uint32_t n = X.dim.size();
 		for (uint32_t i = 0; i < n; i++)
 		{
-			loss += -Y[i] * std::log(X[i]) - (1.f - Y[i]) * std::log((1.f - X[i]));
+			loss += -T[i] * std::log(X[i]) - (1.f - T[i]) * std::log((1.f - X[i]));
 		}
 
-		return loss;
+		if (std::isnan(loss))
+			loss = 0.f;
+
+		Y[0] = loss;
 	}
 
-	virtual void df(Tensor& dX, const Tensor& X, const Tensor& Y) const override
+	void backward(const Tensor& X, const Tensor& dY) override
 	{
 		const uint32_t n = X.dim.size();
 		for (uint32_t i = 0; i < n; i++)
 		{
-			dX[i] = (X[i] - Y[i]) / (X[i] * (1.f - X[i]));
+			dX[i] = (X[i] - T[i]) / (X[i] * (1.f - X[i]));
+			if (std::isnan(dX[i]))
+				dX[i] = 0.f;
+			if (std::isinf(dX[i]))
+				dX[i] = 1.f;
 		}
 	}
-
 };
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//													Neural Net
+//														Model
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-class NN
+class Model
 {
 public:
-	NN() : m_loss(std::make_shared<MSE>())
+	Model(vector<shared_ptr<Input>> inputs, vector<shared_ptr<LossLayer>> losses)
+		: m_inputs(inputs)
+		, m_losses(losses)
 	{
+		assert(!m_inputs.empty());
+		buildPath();
 	}
 
-	~NN()
+	void forward(const Tensor& X)
 	{
-		for (auto& f : m_layers)
-		{
-			delete f;
-		}
-	}
-
-	void initialize(Dim inDim)
-	{
-		Dim prevDim = inDim;
-		for (uint32_t i = 0; i < m_layers.size(); i++)
-		{
-			m_layers[i]->initialize(prevDim);
-			prevDim = m_layers[i]->Y.dim;
-		}
-	}
-
-	const Tensor& forward(const Tensor& X)
-	{
-		const Tensor* cur_X = &X;
-		for (uint32_t i = 0; i < m_layers.size(); i++)
-		{
-			m_layers[i]->forward(*cur_X);
-			cur_X = &m_layers[i]->Y;
-		}
-		return *cur_X;
+		forward({ &X });
 	}
 
 	float forward(const Tensor& X, const Tensor& Y)
 	{
-		const Tensor& act = forward(X);
-		return m_loss->f(act, Y);
+		return forward({ &X }, { &Y });
 	}
 
-	const Tensor& backward(const Tensor& X, const Tensor& Y)
+	float forward(const vector<const Tensor*>& X, const vector<const Tensor*>& Y = vector<const Tensor*>())
 	{
-		assert(m_layers.size());
-		const auto lastLayer = m_layers.back();
-		m_lossGrad.init(lastLayer->Y.dim);
-		m_loss->df(m_lossGrad, lastLayer->Y, Y);
-		const Tensor* cur_dX = &m_lossGrad;
-		for (int i = m_layers.size() - 1; i >= 0; i--)
+		// set inputs
+		assert(m_inputs.size() == X.size());
+		for (uint32_t i = 0; i < m_inputs.size(); i++)
 		{
-			const Tensor* cur_X = (i > 0 ? &m_layers[i - 1]->Y : &X);
-			m_layers[i]->backward(*cur_X, *cur_dX);
-			cur_dX = &m_layers[i]->dX;
+			m_inputs[i]->Y = *X[i];
 		}
-		return *cur_dX;
+
+		// set targets
+		assert(m_losses.size() >= Y.size());
+		for (uint32_t i = 0; i < Y.size(); i++)
+		{
+			m_losses[i]->T = *Y[i];
+		}
+
+		// forward path
+		for (auto l : m_forwardPath)
+		{
+			l->forward();
+		}
+
+		// calc loss
+		float totalLoss = 0.f;
+		for (auto l : m_losses)
+		{
+			totalLoss += l->Y.data[0];
+		}
+		return totalLoss;
 	}
 
-	void addLayer(std::shared_ptr<Layer> layer)
+	void backward()
 	{
-
+		for (auto it = m_forwardPath.rbegin(); it != m_forwardPath.rend(); ++it) 
+		{
+			(*it)->backward();
+		}
 	}
 
-	void addDense(uint32_t n)
+	void fillOptimizationData(vector<OptimizationData>& data)
 	{
-		m_layers.push_back(new Dense(n));
-	}
-
-	void addConv(uint32_t filters, uint32_t kernel_x, uint32_t kernel_y, uint32_t stride = 1, uint32_t pad = 0)
-	{
-		m_layers.push_back(new Conv(filters, kernel_x, kernel_y, stride, pad));
-	}
-
-	void AddRelu()
-	{
-		m_layers.push_back(new Relu());
-	}
-
-	void addSoftmax()
-	{
-		m_layers.push_back(new Softmax());
-	}
-
-	void setLoss(std::shared_ptr<Loss> loss)
-	{
-		m_loss = loss;
-	}
-
-	void fillOptimizationData(std::vector<OptimizationData>& data)
-	{
-		for (auto& l : m_layers)
+		for (auto l : m_forwardPath)
 		{
 			l->fillOptimizationData(data);
 		}
 	}
 
 private:
-	std::vector<Layer*> m_layers;
-	std::shared_ptr<Loss> m_loss;
-	Tensor				  m_lossGrad;
-};
-
-std::ostream& operator<<(std::ostream& os, const std::vector<float>& v)
-{
-	os << "[";
-	for (auto x : v)
+	void buildPath()
 	{
-		os << x << ",";
+		// build forward path by taking dependencies into account (topological sort)
+		m_forwardPath.clear();
+		map<Layer*, int> deps;
+
+		for (auto l : m_inputs)
+		{
+			m_forwardPath.push_back(l.get());
+		}
+
+		for (uint32_t i = 0; i < m_forwardPath.size(); i++)
+		{
+			auto layer = m_forwardPath[i];
+			for (auto wp : layer->outputs)
+			{
+				auto next = wp.lock().get();
+				const uint32_t n = next->inputs.size();
+				if (n > 1)
+					deps[layer]++;
+
+				if (n == 1 || n == deps[next])
+					m_forwardPath.push_back(next);
+			}
+		}
+
 	}
-	os << "]\n";
-	return os;
-}
+
+	vector<Layer*>					m_forwardPath;
+
+	vector<shared_ptr<Input>>		m_inputs;
+	vector<shared_ptr<LossLayer>>	m_losses;
+};
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -605,7 +745,7 @@ public:
 
 	uint32_t m_iter;
 
-	void init(NN* net)
+	void init(Model* net)
 	{
 		m_net = net;
 		reset();
@@ -625,14 +765,19 @@ public:
 
 	void train(const Tensor& X, const Tensor& Y)
 	{
+		train({ &X }, { &Y });
+	}
+
+	void train(const vector<const Tensor*>& X, const vector<const Tensor*>& Y)
+	{
 		float cost_loss = m_net->forward(X, Y);
-		m_net->backward(X, Y);
+		m_net->backward();
 		m_lossAcc += cost_loss;
 
 		m_iter++;
 		if (m_iter % batchSize == 0)
 		{
-			std::vector<std::future<float>> futures;
+			vector<std::future<float>> futures;
 			for (uint32_t i = 0; i < m_optData.size(); i++)
 			{
 				futures.push_back(std::async([&](uint32_t i)
@@ -684,9 +829,9 @@ public:
 	}
 
 private:
-	NN* m_net;
-	std::vector<OptimizationData> m_optData;
-	std::vector<std::vector<OptimizerT>> m_kernels;
+	Model* m_net;
+	vector<OptimizationData> m_optData;
+	vector<vector<OptimizerT>> m_kernels;
 	float m_loss;
 	float m_lossAcc;
 };

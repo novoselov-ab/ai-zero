@@ -1,8 +1,7 @@
 #include <ai.h>
-
 #define LOG_TO_FILE 1
 
-static void gradientCheck(NN& net, const Tensor& x, const Tensor& y)
+static void gradientCheck(Model& net, const Tensor& x, const Tensor& y)
 {
 	std::vector<OptimizationData> m_optData;
 	m_optData.clear();
@@ -12,7 +11,7 @@ static void gradientCheck(NN& net, const Tensor& x, const Tensor& y)
 #if LOG_TO_FILE
 	std::cout << "loss: " << loss << "\n";
 #endif
-	net.backward(x, y);
+	net.backward();
 
 	const float epsilon = 1e-3f;
 
@@ -49,42 +48,45 @@ int main()
 	freopen("../output.txt", "w", stdout);
 #endif
 
-	NN nn;
-	nn.addConv(1, 1, 1, 1, 0);
-	nn.addConv(1, 1, 1, 1, 0);
-	nn.addConv(1, 3, 3, 1, 1);
-	nn.addDense(3);
-	nn.addDense(3);
-	nn.addDense(2);
-	nn.addSoftmax();
-	nn.setLoss(std::make_shared<CrossEntropy>());
+	Dim inputDim = { 4,4,1 };
+	auto input = make_shared<Input>(inputDim);
+	auto x = (*make_shared<Conv>(16, 3, 3, 2, 1))(input);
+	x = (*make_shared<Relu>())(x);
+	x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
+	x = (*make_shared<Relu>())(x);
+	x = (*make_shared<Dense>(32))(x);
+	x = (*make_shared<Dense>(10))(x);
+	auto output = make_shared<Softmax>();
+	auto loss = make_shared<CrossEntropy>();
+	x = (*output)(x);
+	x = (*loss)(x);
 
-	Tensor input; 
-	input.initRand({ 4, 4, 1 });
-	nn.initialize(input.dim);
-
-	Tensor ans = nn.forward(input);
-	std::cout << ans;
+	Model model({ input }, { loss });
 
 	AdamTrainer t;
 	t.l2Decay = 0;
 	t.lr = 0.001f;
-	t.init(&nn);
+	t.init(&model);
 	
-	Tensor output;
-	output.init({ 1, 1, 2 });
-	output.data = { 0, 1 };
+	Tensor X, Y;
+	X.initRand(inputDim);
+	Y.init({ 1, 1, 10 });
+	Y.data[2] = 1;
 
-	gradientCheck(nn, input, output);
+	model.forward(X);
+	std::cout << output->Y;
+
+	//gradientCheck(model, X, Y);
 
 	const float epochs = 50;
 	for (int i = 0; i < epochs; i++)
 	{
-		t.train(input, output);
+		t.train(X, Y);
 		std::cout << "Loss:" << t.getLoss() << "\n";
 
 	}
-	std::cout << nn.forward(input);
+	model.forward(X);
+	std::cout << output->Y;
 
 	//getchar();
 

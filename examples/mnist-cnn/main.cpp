@@ -24,24 +24,25 @@ int main()
 	std::cout << "Nbr of test images = " << dataset.test_images.size() << std::endl;
 	std::cout << "Nbr of test labels = " << dataset.test_labels.size() << std::endl;
 
+	auto input = make_shared<Input>(Dim { 28, 28, 1 });
+	auto x = (*make_shared<Conv>(32, 3, 3, 2, 1))(input);
+	x = (*make_shared<Relu>())(x);
+	x = (*make_shared<Conv>(64, 3, 3, 2, 1))(x);
+	x = (*make_shared<Relu>())(x);
+	x = (*make_shared<Dense>(128))(x);
+	x = (*make_shared<Dense>(10))(x);
+	auto output = make_shared<Softmax>();
+	auto loss = make_shared<CrossEntropy>();
+	x = (*output)(x);
+	x = (*loss)(x);
 
-	NN nn;
-	nn.addConv(32, 3, 3, 2, 1);
-	nn.AddRelu();
-	nn.addConv(64, 3, 3, 2, 1);
-	nn.AddRelu();
-	nn.addDense(128);
-	nn.addDense(10);
-	nn.addSoftmax();
-	nn.setLoss(std::make_shared<CrossEntropy>());
-
-	nn.initialize({ 28, 28, 1 });
+	Model model({ input }, { loss });
 
 	AdagradTrainer t;
 	t.l2Decay = 0.f;
 	t.lr = 0.01f;
 	t.batchSize = 128;
-	t.init(&nn);
+	t.init(&model);
 
 	const auto imageToTensorFn = [](const std::vector<uint8_t>& image, Tensor& t)
 	{
@@ -68,10 +69,11 @@ int main()
 		{
 			const int index = g_randomGen() % dataset.test_images.size();
 			const std::vector<uint8_t>& image = dataset.test_images[index];
-			Tensor x;
-			imageToTensorFn(image, x);
+			Tensor X;
+			imageToTensorFn(image, X);
 
-			const Tensor& ans = nn.forward(x);
+			model.forward({ X });
+			const Tensor& ans = output->Y;
 			uint32_t maxIndex = std::distance(ans.data.begin(), std::max_element(ans.data.begin(), ans.data.end()));
 			if (dataset.test_labels[index] == maxIndex)
 			{
@@ -93,11 +95,11 @@ int main()
 		{
 			const int index = g_randomGen() % dataset.training_images.size();
 			const std::vector<uint8_t>& image = dataset.training_images[index];
-			Tensor x;
-			imageToTensorFn(image, x);
-			Tensor y;
-			labelToOneHot(dataset.training_labels[index], y);
-			t.train(x, y);
+			Tensor X;
+			imageToTensorFn(image, X);
+			Tensor Y;
+			labelToOneHot(dataset.training_labels[index], Y);
+			t.train({ X }, { Y });
 		}
 		auto epochTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 		std::cout << "EpochTime (ms):" << epochTime.count() << "\n";
@@ -105,6 +107,5 @@ int main()
 		std::cout << "Acc:" << calcAcc() << "\n";
 		std::cout << std::flush;
 	}
-
 	return 0;
 }
