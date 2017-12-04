@@ -25,6 +25,9 @@
 !*.txt
 !*.md
 
+# Data files
+!/examples/mnist-cnn/mnist/data/*
+
 # Other configuration and markup files
 !*.ini
 !*.json

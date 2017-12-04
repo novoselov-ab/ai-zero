@@ -1,5 +1,5 @@
 #include <ai.h>
-#include "mnist/mnist_reader.hpp" // remove later
+#include "mnist/mnist_reader.hpp"
 
 #define LOG_TO_FILE 1
 
@@ -83,8 +83,8 @@ int main()
 		return static_cast<float>(correct) / total;
 	};
 
-	const int epochs = 100;
-	const int epochSize = 400;
+	const int epochs = 5;
+	const int epochSize = 0;
 	int epoch = 0;
 	for (int epoch = 0; epoch < epochs; epoch++)
 	{
@@ -106,5 +106,6 @@ int main()
 		std::cout << "Acc:" << calcAcc() << "\n";
 		std::cout << std::flush;
 	}
+
 	return 0;
 }

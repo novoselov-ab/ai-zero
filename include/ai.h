@@ -10,6 +10,9 @@
 #include <cassert>
 #include <chrono>
 #include <future>
+#include <ostream>
+#include <istream>
+#include <fstream>
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //														Common
@@ -690,6 +693,38 @@ public:
 		{
 			l->fillOptimizationData(data);
 		}
+	}
+
+	void save(ostream& os)
+	{
+		vector<OptimizationData> data;
+		fillOptimizationData(data);
+		for (auto& d : data)
+		{
+			os.write(reinterpret_cast<const char*>(d.theta.data()), d.theta.size() * sizeof(float));
+		}
+	}
+
+	void save(const string& filename)
+	{
+		ofstream ofs(filename, std::ifstream::out | std::ios::binary);
+		save(ofs);
+	}
+
+	void load(istream& is)
+	{
+		vector<OptimizationData> data;
+		fillOptimizationData(data);
+		for (auto& d : data)
+		{
+			is.read(reinterpret_cast<char*>(d.theta.data()), d.theta.size() * sizeof(float));
+		}
+	}
+
+	void load(const string& filename)
+	{
+		std::ifstream ifs(filename, std::ifstream::in | std::ios::binary);
+		load(ifs);
 	}
 
 private:
