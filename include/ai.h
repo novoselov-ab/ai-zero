@@ -40,16 +40,26 @@ struct Dim
 
 struct Tensor
 {
+	Tensor(Dim d = Dim()) : dim(d)
+	{
+		data.resize(dim.size());
+	}
+
 	void init(Dim d)
 	{
 		dim = d;
-		data.resize(dim.size(), 0);
+		data.resize(dim.size());
+	}
+
+	void initZero(Dim d)
+	{
+		init(d);
+		setZero();
 	}
 
 	void initRand(Dim d)
 	{
-		dim = d;
-		data.resize(dim.size());
+		init(d);
 		const float scale = std::sqrt(1.0f / dim.size());
 		std::normal_distribution<double> distribution(0.f, scale);
 		for (auto& x : data)
@@ -225,7 +235,7 @@ public:
 				const Tensor* dY = nullptr;
 				if (outputs.size() > 1)
 				{
-					m_dY.init(outputs[0].lock().get()->dX.dim);
+					m_dY.initZero(outputs[0].lock().get()->dX.dim);
 					m_dY.setZero();
 					for (auto o : outputs)
 					{
@@ -259,8 +269,8 @@ class Input : public SingleInputLayer
 public:
 	Input(Dim inDim)
 	{
-		Y.init(inDim);
-		dX.init(inDim);
+		Y.initZero(inDim);
+		dX.initZero(inDim);
 	}
 
 	void initialize(Dim inDim) override {}
@@ -302,20 +312,20 @@ class Dense : public DotLayer
 public:
 	Dense(uint32_t n)
 	{
-		Y.init({ 1, 1, n });
+		Y.initZero({ 1, 1, n });
 		m_filters.resize(n);
 		m_filtersGrad.resize(n);
 		m_biases.initRand({ 1, 1, n });
-		m_biasesGrad.init({ 1, 1, n });
+		m_biasesGrad.initZero({ 1, 1, n });
 	}
 
 	void initialize(Dim inDim) override
 	{
-		dX.init(inDim);
+		dX.initZero(inDim);
 		for (auto& f : m_filters)
 			f.initRand({ 1, 1, inDim.size() });
 		for (auto& f : m_filtersGrad)
-			f.init({ 1, 1, inDim.size() });
+			f.initZero({ 1, 1, inDim.size() });
 	}
 
 	void forward(const Tensor& X) override
@@ -353,11 +363,11 @@ public:
 class Conv : public DotLayer
 {
 public:
-	Conv(uint32_t filters, uint32_t kernel_x, uint32_t kernel_y, uint32_t stride, uint32_t pad)
+	Conv(uint32_t numFilters, uint32_t kx, uint32_t ky, uint32_t stride, uint32_t pad)
 	{
-		m_filterCount = filters;
-		m_ksx = kernel_x;
-		m_ksy = kernel_y;
+		m_numFilters = numFilters;
+		m_kx = kx;
+		m_ky = ky;
 		m_stride = stride;
 		m_pad = pad;
 	}
@@ -365,22 +375,22 @@ public:
 	void initialize(Dim inDim) override
 	{
 		Dim outDim;
-		outDim.depth = m_filterCount;
-		outDim.sx = (uint32_t)std::floor(((float)inDim.sx + m_pad * 2 - m_ksx) / m_stride + 1);
-		outDim.sy = (uint32_t)std::floor(((float)inDim.sy + m_pad * 2 - m_ksy) / m_stride + 1);
+		outDim.depth = m_numFilters;
+		outDim.sx = (uint32_t)std::floor(((float)inDim.sx + m_pad * 2 - m_kx) / m_stride + 1);
+		outDim.sy = (uint32_t)std::floor(((float)inDim.sy + m_pad * 2 - m_ky) / m_stride + 1);
 
-		Y.init(outDim);
-		dX.init(inDim);
+		Y.initZero(outDim);
+		dX.initZero(inDim);
 
 		m_filters.resize(outDim.depth);
 		m_filtersGrad.resize(outDim.depth);
 		m_biases.initRand({ 1, 1, outDim.depth });
-		m_biasesGrad.init({ 1, 1, outDim.depth });
+		m_biasesGrad.initZero({ 1, 1, outDim.depth });
 
 		for (auto& f : m_filters)
-			f.initRand({ m_ksx, m_ksy, inDim.depth });
+			f.initRand({ m_kx, m_ky, inDim.depth });
 		for (auto& f : m_filtersGrad)
-			f.init({ m_ksx, m_ksy, inDim.depth });
+			f.initZero({ m_kx, m_ky, inDim.depth });
 	}
 
 	void forward(const Tensor& X) override
@@ -468,9 +478,9 @@ public:
 	}
 
 private:
-	uint32_t m_filterCount;
-	uint32_t m_ksx;
-	uint32_t m_ksy;
+	uint32_t m_numFilters;
+	uint32_t m_kx;
+	uint32_t m_ky;
 	uint32_t m_stride;
 	int m_pad;
 };
@@ -480,8 +490,8 @@ class Relu : public SingleInputLayer
 public:
 	void initialize(Dim inDim) override
 	{
-		Y.init(inDim);
-		dX.init(inDim);
+		Y.initZero(inDim);
+		dX.initZero(inDim);
 	}
 
 	void forward(const Tensor& X) override
@@ -506,8 +516,8 @@ class Softmax : public SingleInputLayer
 public:
 	void initialize(Dim inDim) override
 	{
-		Y.init(inDim);
-		dX.init(inDim);
+		Y.initZero(inDim);
+		dX.initZero(inDim);
 	}
 
 	void forward(const Tensor& X) override
@@ -557,9 +567,9 @@ public:
 
 	void initialize(Dim inDim) override
 	{
-		Y.init({1,1,1});
-		dX.init(inDim);
-		T.init(inDim);
+		Y.initZero({1,1,1});
+		dX.initZero(inDim);
+		T.initZero(inDim);
 	}
 };
 

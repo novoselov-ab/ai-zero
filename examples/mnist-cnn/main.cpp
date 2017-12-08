@@ -45,7 +45,7 @@ int main()
 
 	const auto imageToTensorFn = [](const std::vector<uint8_t>& image, Tensor& t)
 	{
-		t.init({ 28,28,1 });
+		t.initZero({ 28,28,1 });
 		for (int i = 0; i < image.size(); i++)
 		{
 			t.data[i] = image[i] / 255.f;
@@ -54,7 +54,7 @@ int main()
 
 	const auto labelToOneHot = [](uint8_t label, Tensor& t)
 	{
-		t.init({ 1, 1, 10 });
+		t.initZero({ 1, 1, 10 });
 		t.setZero();
 		t.data[label] = 1;
 	};
@@ -84,7 +84,7 @@ int main()
 	};
 
 	const int epochs = 5;
-	const int epochSize = 0;
+	const int epochSize = 200;
 	int epoch = 0;
 	for (int epoch = 0; epoch < epochs; epoch++)
 	{
