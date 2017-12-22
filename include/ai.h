@@ -10,6 +10,7 @@
 #include <cassert>
 #include <chrono>
 #include <future>
+#include <iomanip>
 #include <ostream>
 #include <istream>
 #include <fstream>
@@ -60,17 +61,22 @@ struct Tensor
 	void initRand(Dim d)
 	{
 		init(d);
+		setRand();
+	}
+
+	void setZero()
+	{
+		std::fill(data.begin(), data.end(), 0);
+	}
+
+	void setRand()
+	{
 		const float scale = std::sqrt(1.0f / dim.size());
 		std::normal_distribution<double> distribution(0.f, scale);
 		for (auto& x : data)
 		{
 			x = distribution(g_randomGen);
 		}
-	}
-
-	void setZero()
-	{
-		std::fill(data.begin(), data.end(), 0);
 	}
 
 	float get(uint32_t x, uint32_t y, uint32_t d) const
@@ -91,15 +97,15 @@ struct Tensor
 	friend std::ostream& operator<<(std::ostream& os, const Tensor& t)
 	{
 		os << "Dim: [" << t.dim.sx << "," << t.dim.sy << "," << t.dim.depth << "]\n";
-		for (int d = 0; d < t.dim.depth; d++)
+		for (uint32_t d = 0; d < t.dim.depth; d++)
 		{
 			if (t.dim.depth > 1)
 				os << "depth:" << d << "\n";
-			for (int y = 0; y < t.dim.sy; y++)
+			for (uint32_t y = 0; y < t.dim.sy; y++)
 			{
-				for (int x = 0; x < t.dim.sx; x++)
+				for (uint32_t x = 0; x < t.dim.sx; x++)
 				{
-					os << t.get(x, y, d) << " ";
+					os << /*std::setw(2) << */t.get(x, y, d) << " ";
 				}
 				os << "\n";
 			}
@@ -138,6 +144,12 @@ std::ostream& operator<<(std::ostream& os, const vector<float>& v)
 	}
 	os << "]\n";
 	return os;
+}
+
+bool randBernoulli(double p = 0.5)
+{
+	std::bernoulli_distribution d(p);
+	return d(g_randomGen);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
