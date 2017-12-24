@@ -70,13 +70,13 @@ int main()
 	
 	Tensor X, Y;
 	X.initRand(inputDim);
-	Y.init({ 1, 1, 10 });
+	Y.initZero({ 1, 1, 10 });
 	Y.data[2] = 1;
 
 	model.forward(X);
 	std::cout << output->Y;
 
-	//gradientCheck(model, X, Y);
+	gradientCheck(model, X, Y);
 
 	const float epochs = 50;
 	for (int i = 0; i < epochs; i++)
