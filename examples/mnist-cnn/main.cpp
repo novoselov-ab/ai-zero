@@ -84,7 +84,7 @@ int main()
 	};
 
 	const int epochs = 5;
-	const int epochSize = 0;
+	const int epochSize = 200;
 	int epoch = 0;
 	for (int epoch = 0; epoch < epochs; epoch++)
 	{
