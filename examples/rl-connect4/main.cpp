@@ -26,9 +26,18 @@ public:
 	virtual bool isFinished() const = 0;
 	virtual float getReward(uint32_t player) const = 0;
 	virtual const Tensor& getState(uint32_t player) const = 0;
-	virtual void doAction(const Tensor& action, uint32_t player) = 0;
+	virtual void doAction(const Tensor& action) = 0;
 	virtual void reset() = 0;
+	virtual Game* clone() const = 0;
 	virtual void render() {}
+
+	void doAction(int actionIndex)
+	{
+		Tensor action;
+		action.initZero({ 1, 1, getActionCount() });
+		action[actionIndex] = 1.f;
+		doAction(action);
+	}
 };
 
 class Connect4 : public Game
@@ -38,7 +47,7 @@ public:
 
 	uint32_t getActionCount() const override { return 7; }
 
-	Dim getStateDim() const override { return Dim{ 7,6,1 }; }
+	Dim getStateDim() const override { return Dim{ 7,6,2 }; }
 	
 	uint32_t getCurrentPlayer() const override { return m_currentPlayer; }
 
@@ -51,7 +60,7 @@ public:
 		return player == 0 ? m_stateP0 : m_stateP1;
 	}
 
-	void doAction(const Tensor& action, uint32_t player) override
+	void doAction(const Tensor& action) override
 	{
 		assert(!isFinished());
 
@@ -80,6 +89,13 @@ public:
 		m_stateP1.initZero(getStateDim());
 		m_running = true;
 		totalMoves = 0;
+	}
+
+	Game* clone() const override
+	{
+		Connect4* copy = new Connect4();
+		*copy = *this;
+		return copy;
 	}
 
 	void render() override
@@ -112,7 +128,7 @@ private:
 	{
 		if (m_stateP0.get(x, y, 0) > 0.f)
 			return 0;
-		else if (m_stateP0.get(x, y, 0) < 0.f)
+		else if (m_stateP0.get(x, y, 1) > 0.f)
 			return 1;
 		else
 			return -1;
@@ -122,8 +138,8 @@ private:
 	{
 		if (getBoardValue(x, y) == -1)
 		{
-			m_stateP0.set(x, y, 0, m_currentPlayer == 0 ? 1.f : -1.f);
-			m_stateP1.set(x, y, 0, m_stateP0.get(x, y, 0) * -1.f);
+			m_stateP0.set(x, y, m_currentPlayer, 1.f);
+			m_stateP1.set(x, y, (m_currentPlayer + 1) % 2, 1.f);
 
 			const int sx = getStateDim().sx;
 			const int sy = getStateDim().sy;
@@ -183,6 +199,180 @@ private:
 	uint32_t totalMoves;
 };
 
+class Player
+{
+public:
+	virtual void startGame() = 0;
+	virtual void notifyGameAction(uint32_t action) {}
+	virtual void chooseAction(Game* game, Tensor& outAction) = 0;
+	virtual void finishGame(float reward) = 0;
+};
+
+struct MCTSModel
+{
+	Model* model;
+	Layer* policyOutput;
+	Layer* valueOutput;
+};
+
+class MCTSPlayer : public Player
+{
+public:
+	struct Config
+	{
+		int searchIterations = 100;
+		int virtualLoss = 3;
+		int c_puct = 5;
+	};
+
+	struct MCTSModel
+
+	MCTSPlayer(MCTSModel model, int player, Config& config) : m_model(model), m_player(player), m_config(config) {}
+
+
+	void startGame() override
+	{
+		m_currentNode = nullptr;
+	}
+
+	void chooseAction(Game* game, Tensor& outAction) override
+	{
+		m_actionCount = game->getActionCount(); // cache once
+
+		int ITERATIONS = 100;
+
+		if (!m_currentNode)
+			m_currentNode = createNode();
+
+		for (int i = 0; i < ITERATIONS; i++)
+		{
+			Game* gameCopy = game->clone();
+			searchMove(gameCopy, &m_currentNode);
+		}
+	}
+
+	void finishGame(float reward) override
+	{
+
+	}
+
+private:
+	float searchMove(Game* game, Node* node)
+	{
+		if (game->isFinished())
+		{
+			return game->getReward(m_player);
+		}
+
+		if (node->isLeaf)
+		{
+			float leafV = expand(game, node);
+			if (game->getCurrentPlayer() != m_player)
+				leafV = -leafV;
+			return leafV;
+		}
+
+		int actionIndex = selectAction(game, node);
+		game->doAction(actionIndex);
+
+		Link& nodeLink = node->links[actionIndex];
+		nodeLink.n += m_config.virtualLoss;
+		nodeLink.w -= m_config.virtualLoss;
+		float leafV = searchMove(game, node->links[actionIndex].child);
+
+		// backup update
+		nodeLink.n = nodeLink.n - m_config.virtualLoss + 1;
+		nodeLink.w = nodeLink.w + m_config.virtualLoss + leafV;
+		nodeLink.q = nodeLink.w / nodeLink.n;
+		return leafV;
+	}
+
+	float expand(Game* game, Node* node)
+	{
+		const Tensor& state = game->getState(game->getCurrentPlayer());
+		m_model.model->forward(state);
+		float value = m_model.valueOutput->Y[0];
+
+		for (uint32_t i = 0; i < m_actionCount; i++)
+		{
+			node->links[i].p = m_model.policyOutput[i];
+		}
+
+		return value;
+	}
+
+	int selectAction(Game* game, Node* node)
+	{
+		float nsum = 0.f;
+		for (uint32_t i = 0; i < m_actionCount; i++)
+		{
+			nsum += node->links[i].n;
+		}
+		float xx_ = std::max(std::sqrt(nsum), 1);
+		
+		//
+
+		return 0;//action
+	}
+
+
+
+	const int MAX_ACTION_COUNT = 10;
+
+	struct Link
+	{
+		int n;
+		float w, q, u, p;
+		Node* child;
+	};
+
+	struct Node
+	{
+		Node() : isLeaf(true), links{ 0 } {}
+
+		bool isLeaf;
+		Link links[MAX_ACTION_COUNT];
+	};
+
+	Node* createNode() { return new Node(); };
+	// release
+
+	MCTSModel m_model;
+	int m_player;
+	uint32_t m_actionCount;
+	Node* m_currentNode;
+	Config m_config;
+};
+
+class SelfPlay
+{
+public:
+
+	void run(Model* model)
+	{
+		Connect4 env;
+		Player* player0 = new MCTSPlayer(model);
+		Player* player1 = new MCTSPlayer(model);
+
+		while (1)
+		{
+			player0->startGame();
+			player1->startGame();
+
+			env.reset();
+			while (!env.isFinished())
+			{
+				Player* current = (env.getCurrentPlayer() == 0) ? player0 : player1;
+				Tensor action;
+				current->action(&env, action);
+				env.doAction(action);
+			}
+
+			player0->finishGame(env.getReward(0));
+			player1->finishGame(env.getReward(1));
+		}
+	}
+};
 
 int main()
 {
@@ -200,10 +390,10 @@ int main()
 		game.render();
 		while (!game.isFinished())
 		{
-			int player = game.getCurrentPlayer();
+			//int player = game.getCurrentPlayer();
 			Tensor action({ 1, 1, game.getActionCount() });
 			action.setRand();
-			game.doAction(action, player);
+			game.doAction(action);
 			std::cout << "p0 reward: " << game.getReward(0) << "\n";
 			std::cout << "p1 reward: " << game.getReward(1) << "\n";
 			game.render();

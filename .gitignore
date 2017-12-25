@@ -37,13 +37,13 @@
 !.editorconfig
 
 # Projects and makefiles
-/build
-!/build/*.vcproj
-!/build/*.vcxproj
-!/build/*.vcxproj.filters
-!/build/*.sln
-!/build/*.vsprops
-!/build/*.snippet
+/build/*.txt
+!/build/**/*.vcproj1
+!/build/**/*.vcxproj
+!/build/**/*.vcxproj.filters
+!/build/**/*.sln
+!/build/**/*.vsprops
+!/build/**/*.snippet
 
 # Specific names
 !README
