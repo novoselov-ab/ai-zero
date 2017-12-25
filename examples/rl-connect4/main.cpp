@@ -27,6 +27,7 @@ public:
 	virtual float getReward(uint32_t player) const = 0;
 	virtual const Tensor& getState(uint32_t player) const = 0;
 	virtual void doAction(const Tensor& action) = 0;
+	virtual void getLegalActions(Tensor& legalActions) const = 0;
 	virtual void reset() = 0;
 	virtual Game* clone() const = 0;
 	virtual void render() {}
@@ -58,6 +59,17 @@ public:
 	const Tensor& getState(uint32_t player) const
 	{
 		return player == 0 ? m_stateP0 : m_stateP1;
+	}
+
+	void getLegalActions(Tensor& legalActions) const override
+	{
+		legalActions.initZero({ 1, 1, getActionCount() });
+		const Dim& d = getStateDim();
+		for (uint32_t x = 0; x < d.sx; x++)
+		{
+			if (getBoardValue(x, d.sy - 1) == -1)
+				legalActions[x] = 1;
+		}
 	}
 
 	void doAction(const Tensor& action) override
