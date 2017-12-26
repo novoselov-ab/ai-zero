@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <numeric>
 #include <map>
 #include <random>
 #include <iostream>
@@ -58,6 +59,12 @@ struct Tensor
 		setZero();
 	}
 
+	void initOnes(Dim d)
+	{
+		init(d);
+		setOnes();
+	}
+
 	void initRand(Dim d)
 	{
 		init(d);
@@ -67,6 +74,11 @@ struct Tensor
 	void setZero()
 	{
 		std::fill(data.begin(), data.end(), 0);
+	}
+
+	void setOnes()
+	{
+		std::fill(data.begin(), data.end(), 1);
 	}
 
 	void setRand()
@@ -150,6 +162,29 @@ bool randBernoulli(double p = 0.5)
 {
 	std::bernoulli_distribution d(p);
 	return d(g_randomGen);
+}
+
+float randUniform(float a, float b)
+{
+	std::uniform_real_distribution<float> d(a, b);
+	return d(g_randomGen);
+}
+
+void fillRandDirichlet(Tensor& y, float alpha)
+{
+	// take samples from Gamma distribution (alpha, 1.0)
+	std::gamma_distribution<float> d(alpha, 1.0f);
+	for (uint32_t i = 0; i < y.data.size(); i++)
+		y.data[i] = d(g_randomGen);
+	// then norm by sum
+	float ys = accumulate(y.data.begin(), y.data.end(), 0.f);
+	for (uint32_t i = 0; i < y.data.size(); i++)
+		y.data[i] /= ys;
+}
+
+uint32_t argmax(const Tensor& t)
+{
+	return distance(t.data.begin(), max_element(t.data.begin(), t.data.end()));
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
