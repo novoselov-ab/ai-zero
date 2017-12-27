@@ -23,6 +23,37 @@
 using namespace std;
 std::default_random_engine g_randomGen;
 
+// Serialization utils
+// ====================
+
+template<class T>
+void serializePODVector(std::ostream& os, const vector<T>& v)
+{
+	os.write(reinterpret_cast<const char*>(v.data()), v.size() * sizeof(T));
+}
+
+template<class T>
+void deserializePODVector(vector<T>& v, std::istream& is)
+{
+	is.read(reinterpret_cast<char*>(v.data()), v.size() * sizeof(T));
+}
+
+template<class T>
+void serializePOD(std::ostream& os, const T& v)
+{
+	os.write(reinterpret_cast<const char*>(&v), sizeof(T));
+}
+
+template<class T>
+void deserializePOD(T& v, std::istream& is)
+{
+	is.read(reinterpret_cast<char*>(&v), sizeof(T));
+}
+
+
+// Dim (dimensions triple)
+// ====================
+
 struct Dim
 {
 	uint32_t sx;
@@ -38,7 +69,21 @@ struct Dim
 	{
 		return sx == other.sx && sy == other.sy && depth == other.depth;
 	}
+
+	void serialize(std::ostream& os) const
+	{
+		serializePOD(os, *this);
+	}
+
+	void deserialize(std::istream& is)
+	{
+		deserializePOD(*this, is);
+	}
 };
+
+
+// Tensor (3D array)
+// ====================
 
 struct Tensor
 {
@@ -143,6 +188,19 @@ struct Tensor
 		return *this;
 	}
 
+	void serialize(std::ostream& os) const
+	{
+		serializePOD(os, dim);
+		serializePODVector(os, data);
+	}
+
+	void deserialize(std::istream& is)
+	{
+		deserializePOD(dim, is);
+		init(dim);
+		deserializePODVector(data, is);
+	}
+
 	Dim dim;
 	vector<float> data;
 };
@@ -168,6 +226,21 @@ float randUniform(float a, float b)
 {
 	std::uniform_real_distribution<float> d(a, b);
 	return d(g_randomGen);
+}
+
+uint32_t randChoice(const Tensor& probs)
+{
+	float x = randUniform(0.0f, 1.0f);
+	float s = 0.f;
+	for (uint32_t i = 0; i < probs.data.size(); i++)
+	{
+		s += probs.data[i];
+		if (x < s)
+		{
+			return i;
+		}
+	}
+	assert(false);
 }
 
 void fillRandDirichlet(Tensor& y, float alpha)
@@ -758,7 +831,7 @@ public:
 		fillOptimizationData(data);
 		for (auto& d : data)
 		{
-			os.write(reinterpret_cast<const char*>(d.theta.data()), d.theta.size() * sizeof(float));
+			serializePODVector(os, d.theta);
 		}
 	}
 
@@ -774,7 +847,7 @@ public:
 		fillOptimizationData(data);
 		for (auto& d : data)
 		{
-			is.read(reinterpret_cast<char*>(d.theta.data()), d.theta.size() * sizeof(float));
+			deserializePODVector(d.theta, is);
 		}
 	}
 

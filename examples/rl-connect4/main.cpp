@@ -2,6 +2,7 @@
 #include <numeric>
 #define LOG_TO_FILE 1
 
+#if 0
 template <typename T>
 vector<size_t> sortIndexes(const vector<T> &v) 
 {
@@ -15,6 +16,7 @@ vector<size_t> sortIndexes(const vector<T> &v)
 
 	return idx;
 }
+#endif
 
 class Game
 {
@@ -33,7 +35,7 @@ public:
 	virtual Game* clone() const = 0;
 	virtual void render() {}
 
-	void doAction(int actionIndex)
+	void doAction(uint32_t actionIndex)
 	{
 		Tensor action;
 		action.initZero({ 1, 1, getActionCount() });
@@ -217,6 +219,7 @@ public:
 	virtual void notifyGameAction(uint32_t action) = 0;
 	virtual uint32_t chooseAction(Game* game) = 0;
 	virtual void endGame(float reward) = 0;
+	virtual void saveAndClearReplayBuffer(ostream& os) = 0;
 };
 
 struct MCTSModel
@@ -226,6 +229,44 @@ struct MCTSModel
 	Layer* valueOutput;
 };
 
+struct ReplayTurn
+{
+	Tensor state;
+	Tensor policy;
+	float reward;
+};
+
+struct ReplayBuffer
+{
+	vector<ReplayTurn> turns;
+
+	ReplayBuffer()
+	{
+		turns.reserve(1 << 32);
+	}
+
+	void save(ostream& os)
+	{
+		for (auto& t : turns)
+		{
+			t.state.serialize(os);
+			t.policy.serialize(os);
+			serializePOD(os, t.reward);
+		}
+	}
+
+	void load(istream& is)
+	{
+		while(is.peek() != EOF)
+		{
+			turns.push_back(ReplayTurn());
+			turns.back().state.deserialize(is);
+			turns.back().policy.deserialize(is);
+			deserializePOD(turns.back().reward, is);
+		}
+	}
+};
+
 class MCTSPlayer : public Player
 {
 public:
@@ -233,7 +274,7 @@ public:
 
 	struct Config
 	{
-		int searchIterations = 100;
+		int searchIterations = 10;
 		int virtualLoss = 3;
 		int cPUCT = 5;
 		float noiseEps = 0.25f;
@@ -241,12 +282,15 @@ public:
 		int changeTauTurn = 10;
 	};
 
-	MCTSPlayer(MCTSModel model, int player, Config& config) : m_model(model), m_player(player), m_config(config) {}
+	MCTSPlayer(const MCTSModel& model, int player, Config& config) : m_model(model), m_player(player), m_config(config) 
+	{
+	}
 
 
 	void beginGame() override
 	{
 		m_currentNode = nullptr;
+		m_replayBufferStartIndex = m_replayBuffer.turns.size();
 	}
 
 	uint32_t chooseAction(Game* game) override
@@ -263,11 +307,17 @@ public:
 			delete gameCopy; //TODO: pool?
 		}
 
-		return chooseFinalAction(game, m_currentNode);
+		Tensor policy;
+		calcPolicy(game, m_currentNode, policy);
+
+		m_replayBuffer.turns.push_back({ game->getState(m_player), policy, 0.f });
+
+		return randChoice(policy);
 	}
 
 	void notifyGameAction(uint32_t action) override
 	{
+		// advance on the tree and release the unused parts
 		if (m_currentNode)
 		{
 			auto nextNode = m_currentNode->links[action].child;
@@ -279,13 +329,26 @@ public:
 
 	void endGame(float reward) override
 	{
-		// save replay?
+		// write rewards
+		while (m_replayBufferStartIndex < m_replayBuffer.turns.size())
+		{
+			m_replayBuffer.turns[m_replayBufferStartIndex++].reward = reward;
+		}
 
+		// release the remains of the tree
 		if (m_currentNode)
 		{
 			destroyNode(m_currentNode);
 			m_currentNode = nullptr;
 		}
+	}
+
+	void saveAndClearReplayBuffer(ostream& os)
+	{
+		assert(m_replayBufferStartIndex == m_replayBuffer.turns.size());
+		m_replayBuffer.save(os);
+		m_replayBuffer.turns.clear();
+		m_replayBufferStartIndex = 0;
 	}
 
 private:
@@ -306,46 +369,30 @@ private:
 		Link links[MCTSPlayer::MAX_ACTION_COUNT];
 	};
 
-	uint32_t chooseFinalAction(Game* game, Node* node)
+	void calcPolicy(const Game* game, const Node* node, Tensor& outPolicy) const
 	{
-		const uint32_t turn = game->getTurn();
-		if (turn < m_config.changeTauTurn)
+		// sum(N(s,b)) for all b
+		float nsum = 0.f;
+		for (uint32_t i = 0; i < m_actionCount; i++)
 		{
-			float nsum = 0.f;
-			for (uint32_t i = 0; i < m_actionCount; i++)
-			{
-				nsum += node->links[i].n;
-			}
-			nsum = max<float>(nsum, 1.f);
-
-			float x = randUniform(0.0f, 1.0f);
-			float s = 0.f;
-			for (uint32_t i = 0; i < m_actionCount; i++)
-			{
-				s += node->links[i].n / nsum;
-				if (x <= s)
-				{
-					return i;
-				}
-			}
+			nsum += node->links[i].n;
 		}
-		else
+		nsum = max<float>(nsum, 1.f);
+
+		// normalize to be probability distribution
+		outPolicy.init({ 1, 1, m_actionCount });
+		for (uint32_t i = 0; i < m_actionCount; i++)
 		{
-			int maxN = numeric_limits<int>::min();
-			int maxIndex = 0;
-			for (uint32_t i = 0; i < m_actionCount; i++)
-			{
-				if (node->links[i].n > maxN)
-				{
-					maxN = node->links[i].n;
-					maxIndex = i;
-				}
-			}
-			return maxIndex;
+			outPolicy[i] = node->links[i].n / nsum;
 		}
 
-		assert(false);
-		return 0;
+		// if far in game (after tau turn) max out policy to (0, ..., 0, 1, 0, ..., 0) form
+		if (game->getTurn() >= m_config.changeTauTurn)
+		{
+			uint32_t maxActionIndex = argmax(outPolicy);
+			outPolicy.setZero();
+			outPolicy[maxActionIndex] = 1.f;
+		}
 	}
 
 	float searchMove(Game* game, Node* node, bool isRootNode = false)
@@ -378,7 +425,7 @@ private:
 		return leafV;
 	}
 
-	float expand(Game* game, Node* node)
+	float expand(const Game* game, Node* node)
 	{
 		const Tensor& state = game->getState(game->getCurrentPlayer());
 		m_model.model->forward(state);
@@ -389,11 +436,12 @@ private:
 			node->links[i].p = m_model.policyOutput->Y[i];
 			node->links[i].child = createNode();
 		}
+		node->isLeaf = false;
 
 		return value;
 	}
 
-	int selectAction(Game* game, Node* node, bool isRootNode)
+	int selectAction(const Game* game, const Node* node, bool isRootNode) const
 	{
 		// action selection with PUCT algorithm as in Alpha-Zero paper
 
@@ -422,12 +470,12 @@ private:
 		int maxIndex = 0;
 		for (uint32_t i = 0; i < m_actionCount; i++)
 		{
-			int p = node->links[i].p;
+			float p = node->links[i].p;
 			if (isRootNode)
 				p = (1 - m_config.noiseEps) * p + m_config.noiseEps * pDirichlet[i];
-			int u = m_config.cPUCT * p * nsum / (1.f + node->links[i].n);
+			float u = m_config.cPUCT * p * nsum / (1.f + node->links[i].n);
 			float enemyFlip = (game->getCurrentPlayer() == m_player) ? 1.0f : -1.0f;
-			int v = (node->links[i].q * enemyFlip + u) * legalActions[i];
+			float v = (node->links[i].q * enemyFlip + u) * legalActions[i];
 			if (v > maxV)
 			{
 				maxV = v;
@@ -454,35 +502,85 @@ private:
 	uint32_t m_actionCount;
 	Node* m_currentNode;
 	Config m_config;
+	uint32_t m_replayBufferStartIndex;
+	ReplayBuffer m_replayBuffer;
 };
 
-class SelfPlay
+
+static void playNGames(Game* game, Player* player0, Player* player1, uint32_t gameCount = 1)
+{
+	for (uint32_t i = 0; i < gameCount; i++)
+	{
+		player0->beginGame();
+		player1->beginGame();
+
+		game->reset();
+		while (!game->isFinished())
+		{
+			Player* current = (game->getCurrentPlayer() == 0) ? player0 : player1;
+			uint32_t action = current->chooseAction(game);
+			game->doAction(action);
+			player0->notifyGameAction(action);
+			player1->notifyGameAction(action);
+		}
+
+		player0->endGame(game->getReward(0));
+		player1->endGame(game->getReward(1));
+	}
+}
+
+class SelfPlayWorker
 {
 public:
-
-	void run(MCTSModel& model, uint32_t iterations = 1)
+	static void run()
 	{
-		Connect4 env;
-		Player* player0 = new MCTSPlayer(model, 0, MCTSPlayer::Config());
-		Player* player1 = new MCTSPlayer(model, 1, MCTSPlayer::Config());
+		// game
+		Connect4 game;
 
-		for(uint32_t i = 0; i < iterations; i++)
+		// model
+		Dim inputDim = game.getStateDim();
+		auto input = make_shared<Input>(inputDim);
+		auto x = (*make_shared<Conv>(16, 3, 3, 2, 1))(input);
+		x = (*make_shared<Relu>())(x);
+		x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
+		x = (*make_shared<Relu>())(x);
+		auto split = (*make_shared<Dense>(32))(x);
+		auto px = (*make_shared<Dense>(10))(split);
+		px = (*make_shared<Dense>(game.getActionCount()))(px);
+		auto policyOutput = make_shared<Softmax>();
+		auto policyLoss = make_shared<CrossEntropy>();
+		px = (*policyOutput)(px);
+		px = (*policyLoss)(px);
+
+		auto vx = (*make_shared<Dense>(10))(split);
+		auto valueOutput = (*make_shared<Dense>(1))(vx);
+		auto valueLoss = make_shared<MSE>();
+		x = (*valueLoss)(valueOutput);
+
+		Model model({ input }, { policyLoss, valueLoss });
+		MCTSModel mctsModel = { &model, policyOutput.get(), valueOutput.get() };
+
+		MCTSPlayer player0(mctsModel, 0, MCTSPlayer::Config());
+		MCTSPlayer player1(mctsModel, 1, MCTSPlayer::Config());
+		playNGames(&game, &player0, &player1, 1);
+
+		const char* filename = "debug_replay_dump.bin";
 		{
-			player0->beginGame();
-			player1->beginGame();
-
-			env.reset();
-			while (!env.isFinished())
+			ofstream ofs(filename, std::ifstream::out | std::ios::binary);
+			player0.saveAndClearReplayBuffer(ofs);
+			player1.saveAndClearReplayBuffer(ofs);
+		}
+		{
+			ifstream ifs(filename, std::ifstream::in | std::ios::binary);
+			ReplayBuffer buffer;
+			buffer.load(ifs);
+			for (auto& t : buffer.turns)
 			{
-				Player* current = (env.getCurrentPlayer() == 0) ? player0 : player1;
-				Tensor action = current->chooseAction(&env);
-				env.doAction(action);
-				player0->notifyGameAction(action);
-				player1->notifyGameAction(action);
+				std::cout << "\n===\n";
+				std::cout << t.state;
+				std::cout << t.policy;
+				std::cout << t.reward;
 			}
-
-			player0->endGame(env.getReward(0));
-			player1->endGame(env.getReward(1));
 		}
 	}
 };
@@ -493,6 +591,7 @@ int main()
 	freopen("../output.txt", "w", stdout);
 #endif
 
+#if 0
 	Connect4 game;
 
 	for (int i = 0; i < 200; i++)
@@ -512,6 +611,10 @@ int main()
 			game.render();
 		}
 	}
+#endif
+
+	SelfPlayWorker w;
+	w.run();
 
 #if 0
 	Dim inputDim = { 4,4,1 };
