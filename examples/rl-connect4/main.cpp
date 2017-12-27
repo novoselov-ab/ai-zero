@@ -267,22 +267,33 @@ struct ReplayBuffer
 	}
 };
 
+struct MCTSConfig
+{
+	int searchIterations = 10;
+	int virtualLoss = 3;
+	int cPUCT = 5;
+	float noiseEps = 0.25f;
+	float dirichletAlpha = 0.03f;
+	int changeTauTurn = 10;
+};
+
+struct GlobalConfig
+{
+	MCTSConfig mctsConfig;
+
+	std::string replayOutputPath = "./replays";
+	std::string replayFilePrefix = "replays_";
+	uint32_t gamesPerReplayFile = 1;
+
+
+};
+
 class MCTSPlayer : public Player
 {
 public:
 	static const int MAX_ACTION_COUNT = 10;
 
-	struct Config
-	{
-		int searchIterations = 10;
-		int virtualLoss = 3;
-		int cPUCT = 5;
-		float noiseEps = 0.25f;
-		float dirichletAlpha = 0.03f;
-		int changeTauTurn = 10;
-	};
-
-	MCTSPlayer(const MCTSModel& model, int player, Config& config) : m_model(model), m_player(player), m_config(config) 
+	MCTSPlayer(const MCTSModel& model, int player, const MCTSConfig& config) : m_model(model), m_player(player), m_config(config) 
 	{
 	}
 
@@ -501,7 +512,7 @@ private:
 	int m_player;
 	uint32_t m_actionCount;
 	Node* m_currentNode;
-	Config m_config;
+	MCTSConfig m_config;
 	uint32_t m_replayBufferStartIndex;
 	ReplayBuffer m_replayBuffer;
 };
@@ -532,7 +543,7 @@ static void playNGames(Game* game, Player* player0, Player* player1, uint32_t ga
 class SelfPlayWorker
 {
 public:
-	static void run()
+	static void run(const GlobalConfig& config)
 	{
 		// game
 		Connect4 game;
@@ -560,26 +571,31 @@ public:
 		Model model({ input }, { policyLoss, valueLoss });
 		MCTSModel mctsModel = { &model, policyOutput.get(), valueOutput.get() };
 
-		MCTSPlayer player0(mctsModel, 0, MCTSPlayer::Config());
-		MCTSPlayer player1(mctsModel, 1, MCTSPlayer::Config());
-		playNGames(&game, &player0, &player1, 1);
+		for (int i = 0; i < 2; i++)
+		{
+			MCTSPlayer player0(mctsModel, 0, config.mctsConfig);
+			MCTSPlayer player1(mctsModel, 1, config.mctsConfig);
+			playNGames(&game, &player0, &player1, config.gamesPerReplayFile);
 
-		const char* filename = "debug_replay_dump.bin";
-		{
-			ofstream ofs(filename, std::ifstream::out | std::ios::binary);
-			player0.saveAndClearReplayBuffer(ofs);
-			player1.saveAndClearReplayBuffer(ofs);
-		}
-		{
-			ifstream ifs(filename, std::ifstream::in | std::ios::binary);
-			ReplayBuffer buffer;
-			buffer.load(ifs);
-			for (auto& t : buffer.turns)
+			std::string filename = pathJoin(config.replayOutputPath, config.replayFilePrefix + dateTimeNow() + ".bin");
 			{
-				std::cout << "\n===\n";
-				std::cout << t.state;
-				std::cout << t.policy;
-				std::cout << t.reward;
+				ofstream ofs(filename, std::ifstream::out | std::ios::binary);
+				player0.saveAndClearReplayBuffer(ofs);
+				player1.saveAndClearReplayBuffer(ofs);
+			}
+
+			if(0)
+			{
+				ifstream ifs(filename, std::ifstream::in | std::ios::binary);
+				ReplayBuffer buffer;
+				buffer.load(ifs);
+				for (auto& t : buffer.turns)
+				{
+					std::cout << "\n===\n";
+					std::cout << t.state;
+					std::cout << t.policy;
+					std::cout << t.reward;
+				}
 			}
 		}
 	}
@@ -613,8 +629,10 @@ int main()
 	}
 #endif
 
+	GlobalConfig config;
+
 	SelfPlayWorker w;
-	w.run();
+	w.run(config);
 
 #if 0
 	Dim inputDim = { 4,4,1 };

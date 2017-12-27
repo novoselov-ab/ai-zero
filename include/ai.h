@@ -12,7 +12,9 @@
 #include <chrono>
 #include <future>
 #include <iomanip>
+#include <ctime>
 #include <ostream>
+#include <sstream>
 #include <istream>
 #include <fstream>
 
@@ -258,6 +260,21 @@ void fillRandDirichlet(Tensor& y, float alpha)
 uint32_t argmax(const Tensor& t)
 {
 	return distance(t.data.begin(), max_element(t.data.begin(), t.data.end()));
+}
+
+std::string dateTimeNow()
+{
+	auto t = std::time(nullptr);
+	auto tm = *std::localtime(&t);
+
+	std::ostringstream oss;
+	oss << std::put_time(&tm, "%Y-%m-%d %H-%M-%S");
+	return oss.str();
+}
+
+std::string pathJoin(const std::string& p0, const std::string& p1)
+{
+	return p0 + "/" + p1;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
