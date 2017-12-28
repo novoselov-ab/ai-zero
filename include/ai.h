@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <numeric>
 #include <map>
+#include <set>
 #include <random>
 #include <iostream>
+#include <functional>
 #include <cassert>
 #include <chrono>
 #include <future>
@@ -17,12 +19,15 @@
 #include <sstream>
 #include <istream>
 #include <fstream>
+#include <filesystem>
+
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //														Common
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 using namespace std;
+namespace fs = std::experimental::filesystem;
 std::default_random_engine g_randomGen;
 
 // Serialization utils
@@ -230,6 +235,12 @@ float randUniform(float a, float b)
 	return d(g_randomGen);
 }
 
+int randUniform(int a, int b)
+{
+	std::uniform_int_distribution<int> d(a, b);
+	return d(g_randomGen);
+}
+
 uint32_t randChoice(const Tensor& probs)
 {
 	float x = randUniform(0.0f, 1.0f);
@@ -270,11 +281,6 @@ std::string dateTimeNow()
 	std::ostringstream oss;
 	oss << std::put_time(&tm, "%Y-%m-%d %H-%M-%S");
 	return oss.str();
-}
-
-std::string pathJoin(const std::string& p0, const std::string& p1)
-{
-	return p0 + "/" + p1;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -852,9 +858,9 @@ public:
 		}
 	}
 
-	void save(const string& filename)
+	void save(const fs::path& p)
 	{
-		ofstream ofs(filename, std::ifstream::out | std::ios::binary);
+		ofstream ofs(p, std::ifstream::out | std::ios::binary);
 		save(ofs);
 	}
 
@@ -868,9 +874,9 @@ public:
 		}
 	}
 
-	void load(const string& filename)
+	void load(const fs::path& p)
 	{
-		std::ifstream ifs(filename, std::ifstream::in | std::ios::binary);
+		std::ifstream ifs(p, std::ifstream::in | std::ios::binary);
 		load(ifs);
 	}
 

@@ -224,7 +224,7 @@ public:
 
 struct MCTSModel
 {
-	Model* model;
+	unique_ptr<Model> model;
 	Layer* policyOutput;
 	Layer* valueOutput;
 };
@@ -233,7 +233,7 @@ struct ReplayTurn
 {
 	Tensor state;
 	Tensor policy;
-	float reward;
+	Tensor reward;
 };
 
 struct ReplayBuffer
@@ -242,7 +242,7 @@ struct ReplayBuffer
 
 	ReplayBuffer()
 	{
-		turns.reserve(1 << 32);
+		turns.reserve(1 << 31);
 	}
 
 	void save(ostream& os)
@@ -251,7 +251,7 @@ struct ReplayBuffer
 		{
 			t.state.serialize(os);
 			t.policy.serialize(os);
-			serializePOD(os, t.reward);
+			t.reward.serialize(os);
 		}
 	}
 
@@ -262,8 +262,8 @@ struct ReplayBuffer
 			turns.push_back(ReplayTurn());
 			turns.back().state.deserialize(is);
 			turns.back().policy.deserialize(is);
-			deserializePOD(turns.back().reward, is);
-		}
+			turns.back().reward.deserialize(is);
+}
 	}
 };
 
@@ -277,15 +277,27 @@ struct MCTSConfig
 	int changeTauTurn = 10;
 };
 
+struct OptimizerConfig
+{
+	uint32_t samplesCount = 1000;
+	uint32_t iterationCount = 10;
+	uint32_t batchSize = 8;
+};
+
 struct GlobalConfig
 {
 	MCTSConfig mctsConfig;
+	function<unique_ptr<MCTSModel>(const Game*)> buildModelFn;
+	Game* game;
 
-	std::string replayOutputPath = "./replays";
-	std::string replayFilePrefix = "replays_";
+	string modelOutputPath = "./models";
+	string bestModelFilename = "best.model";
+
+	string replayOutputPath = "./replays";
+	string replayFilePrefix = "replays_";
 	uint32_t gamesPerReplayFile = 1;
 
-
+	OptimizerConfig optimizerConfig;
 };
 
 class MCTSPlayer : public Player
@@ -293,7 +305,7 @@ class MCTSPlayer : public Player
 public:
 	static const int MAX_ACTION_COUNT = 10;
 
-	MCTSPlayer(const MCTSModel& model, int player, const MCTSConfig& config) : m_model(model), m_player(player), m_config(config) 
+	MCTSPlayer(MCTSModel* model, int player, const MCTSConfig& config) : m_model(model), m_player(player), m_config(config) 
 	{
 	}
 
@@ -321,7 +333,7 @@ public:
 		Tensor policy;
 		calcPolicy(game, m_currentNode, policy);
 
-		m_replayBuffer.turns.push_back({ game->getState(m_player), policy, 0.f });
+		m_replayBuffer.turns.push_back({ game->getState(m_player), policy, Tensor({1,1,1}) });
 
 		return randChoice(policy);
 	}
@@ -343,7 +355,7 @@ public:
 		// write rewards
 		while (m_replayBufferStartIndex < m_replayBuffer.turns.size())
 		{
-			m_replayBuffer.turns[m_replayBufferStartIndex++].reward = reward;
+			m_replayBuffer.turns[m_replayBufferStartIndex++].reward[0] = reward;
 		}
 
 		// release the remains of the tree
@@ -439,12 +451,12 @@ private:
 	float expand(const Game* game, Node* node)
 	{
 		const Tensor& state = game->getState(game->getCurrentPlayer());
-		m_model.model->forward(state);
-		float value = m_model.valueOutput->Y[0];
+		m_model->model->forward(state);
+		float value = m_model->valueOutput->Y[0];
 
 		for (uint32_t i = 0; i < m_actionCount; i++)
 		{
-			node->links[i].p = m_model.policyOutput->Y[i];
+			node->links[i].p = m_model->policyOutput->Y[i];
 			node->links[i].child = createNode();
 		}
 		node->isLeaf = false;
@@ -477,7 +489,7 @@ private:
 		}
 
 		// calculating V = Q + U and taking argmax(V)
-		int maxV = numeric_limits<float>::min();
+		float maxV = numeric_limits<float>::min();
 		int maxIndex = 0;
 		for (uint32_t i = 0; i < m_actionCount; i++)
 		{
@@ -508,7 +520,7 @@ private:
 		delete node;
 	}
 
-	MCTSModel m_model;
+	MCTSModel* m_model;
 	int m_player;
 	uint32_t m_actionCount;
 	Node* m_currentNode;
@@ -545,61 +557,148 @@ class SelfPlayWorker
 public:
 	static void run(const GlobalConfig& config)
 	{
-		// game
-		Connect4 game;
-
 		// model
-		Dim inputDim = game.getStateDim();
-		auto input = make_shared<Input>(inputDim);
-		auto x = (*make_shared<Conv>(16, 3, 3, 2, 1))(input);
-		x = (*make_shared<Relu>())(x);
-		x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
-		x = (*make_shared<Relu>())(x);
-		auto split = (*make_shared<Dense>(32))(x);
-		auto px = (*make_shared<Dense>(10))(split);
-		px = (*make_shared<Dense>(game.getActionCount()))(px);
-		auto policyOutput = make_shared<Softmax>();
-		auto policyLoss = make_shared<CrossEntropy>();
-		px = (*policyOutput)(px);
-		px = (*policyLoss)(px);
-
-		auto vx = (*make_shared<Dense>(10))(split);
-		auto valueOutput = (*make_shared<Dense>(1))(vx);
-		auto valueLoss = make_shared<MSE>();
-		x = (*valueLoss)(valueOutput);
-
-		Model model({ input }, { policyLoss, valueLoss });
-		MCTSModel mctsModel = { &model, policyOutput.get(), valueOutput.get() };
+		auto model = config.buildModelFn(config.game);
 
 		for (int i = 0; i < 2; i++)
 		{
-			MCTSPlayer player0(mctsModel, 0, config.mctsConfig);
-			MCTSPlayer player1(mctsModel, 1, config.mctsConfig);
-			playNGames(&game, &player0, &player1, config.gamesPerReplayFile);
+			MCTSPlayer player0(model.get(), 0, config.mctsConfig);
+			MCTSPlayer player1(model.get(), 1, config.mctsConfig);
+			playNGames(config.game, &player0, &player1, config.gamesPerReplayFile);
 
-			std::string filename = pathJoin(config.replayOutputPath, config.replayFilePrefix + dateTimeNow() + ".bin");
+			if(!fs::exists(config.replayOutputPath))
+				fs::create_directory(config.replayOutputPath);
+
+			fs::path filename = fs::path(config.replayOutputPath) / dateTimeNow();
+			filename += ".bin";
 			{
-				ofstream ofs(filename, std::ifstream::out | std::ios::binary);
+				ofstream ofs(filename, ifstream::out | ios::binary);
 				player0.saveAndClearReplayBuffer(ofs);
 				player1.saveAndClearReplayBuffer(ofs);
-			}
-
-			if(0)
-			{
-				ifstream ifs(filename, std::ifstream::in | std::ios::binary);
-				ReplayBuffer buffer;
-				buffer.load(ifs);
-				for (auto& t : buffer.turns)
-				{
-					std::cout << "\n===\n";
-					std::cout << t.state;
-					std::cout << t.policy;
-					std::cout << t.reward;
-				}
 			}
 		}
 	}
 };
+
+static void loadBestModel(MCTSModel* model, const GlobalConfig& config)
+{
+	fs::path p = config.modelOutputPath;
+	p /= config.bestModelFilename;
+	assert(fs::exists(p));
+	model->model->load(p);
+}
+
+static void saveAsBestModel(MCTSModel* model, const GlobalConfig& config)
+{
+	fs::path p = config.modelOutputPath;
+	p /= config.bestModelFilename;
+	model->model->save(p);
+}
+
+static void saveModel(MCTSModel* model, const GlobalConfig& config)
+{
+	fs::path p = config.modelOutputPath;
+	p /= dateTimeNow();
+	p += ".model";
+	model->model->save(p);
+}
+
+static set<string, greater<string>> getDateDescendingSortedFiles(const fs::path p)
+{
+	set<string, greater<string>> s;
+	for (auto& p : fs::directory_iterator(p))
+		s.insert(p.path().string());
+	return s;
+}
+
+class OptimizeWorker
+{
+public:
+	static void run(const GlobalConfig& config)
+	{
+		// build model template
+		auto model = config.buildModelFn(config.game);
+
+		// init trainer
+		AdamTrainer t;
+		t.lr = 0.001f;
+		t.batchSize = config.optimizerConfig.batchSize;
+		t.init(model->model.get());
+
+		while (1)
+		{
+			// load best model
+			loadBestModel(model.get(), config);
+
+			// load replay buffer (load most recent files till buffer is full, remove others)
+			ReplayBuffer buffer;
+			set<string, greater<string>> sortedFiles = getDateDescendingSortedFiles(config.replayOutputPath);
+			for (auto& file : sortedFiles)
+			{
+				if (buffer.turns.size() < config.optimizerConfig.samplesCount)
+				{
+					ifstream ifs(file, ifstream::in | ios::binary);
+					buffer.load(ifs);
+				}
+				else
+				{
+					fs::remove(file);
+				}
+			}
+
+			// optimize
+			for (uint32_t i = 0; i < config.optimizerConfig.iterationCount; i++)
+			{
+				int sample = randUniform(0, buffer.turns.size());
+				t.train({ &buffer.turns[sample].state }, { &buffer.turns[sample].policy, &buffer.turns[sample].reward });
+			}
+
+			// save model
+			saveModel(model.get(), config);
+		}
+	}
+};
+
+class EvaluateWorker
+{
+public:
+	static void run(MCTSModel* model, const GlobalConfig& config)
+	{
+
+	}
+};
+
+static unique_ptr<MCTSModel> buildModel1(const Game* game)
+{
+	auto mctsModel = make_unique<MCTSModel>();
+
+	// model
+	Dim inputDim = game->getStateDim();
+	auto input = make_shared<Input>(inputDim);
+	auto x = (*make_shared<Conv>(16, 3, 3, 2, 1))(input);
+	x = (*make_shared<Relu>())(x);
+	x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
+	x = (*make_shared<Relu>())(x);
+	auto split = (*make_shared<Dense>(32))(x);
+	auto px = (*make_shared<Dense>(10))(split);
+	px = (*make_shared<Dense>(game->getActionCount()))(px);
+	auto policyOutput = make_shared<Softmax>();
+	auto policyLoss = make_shared<CrossEntropy>();
+	px = (*policyOutput)(px);
+	px = (*policyLoss)(px);
+
+	auto vx = (*make_shared<Dense>(10))(split);
+	auto valueOutput = (*make_shared<Dense>(1))(vx);
+	auto valueLoss = make_shared<MSE>();
+	x = (*valueLoss)(valueOutput);
+
+	vector<shared_ptr<LossLayer>> losses = { policyLoss, valueLoss };
+	vector<shared_ptr<Input>> inputs = { input };
+	mctsModel->model = make_unique<Model>(inputs, losses);
+	mctsModel->policyOutput = policyOutput.get();
+	mctsModel->valueOutput = valueOutput.get();
+	return mctsModel;
+}
 
 int main()
 {
@@ -629,10 +728,17 @@ int main()
 	}
 #endif
 
+	Connect4 game;
+
 	GlobalConfig config;
+	config.buildModelFn = buildModel1;
+	config.game = &game;
 
 	SelfPlayWorker w;
 	w.run(config);
+
+	OptimizeWorker o;
+	o.run(config);
 
 #if 0
 	Dim inputDim = { 4,4,1 };
