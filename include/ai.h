@@ -125,18 +125,18 @@ struct Tensor
 
 	void setZero()
 	{
-		std::fill(data.begin(), data.end(), 0);
+		std::fill(data.begin(), data.end(), 0.f);
 	}
 
 	void setOnes()
 	{
-		std::fill(data.begin(), data.end(), 1);
+		std::fill(data.begin(), data.end(), 1.f);
 	}
 
 	void setRand()
 	{
 		const float scale = std::sqrt(1.0f / dim.size());
-		std::normal_distribution<double> distribution(0.f, scale);
+		std::normal_distribution<float> distribution(0.f, scale);
 		for (auto& x : data)
 		{
 			x = distribution(g_randomGen);
@@ -254,6 +254,7 @@ uint32_t randChoice(const Tensor& probs)
 		}
 	}
 	assert(false);
+	return 0;
 }
 
 void fillRandDirichlet(Tensor& y, float alpha)
@@ -270,7 +271,7 @@ void fillRandDirichlet(Tensor& y, float alpha)
 
 uint32_t argmax(const Tensor& t)
 {
-	return distance(t.data.begin(), max_element(t.data.begin(), t.data.end()));
+	return static_cast<uint32_t>(distance(t.data.begin(), max_element(t.data.begin(), t.data.end())));
 }
 
 std::string dateTimeNow()
@@ -898,7 +899,7 @@ private:
 			for (auto wp : layer->outputs)
 			{
 				auto next = wp.lock().get();
-				const uint32_t n = next->inputs.size();
+				const size_t n = next->inputs.size();
 				if (n > 1)
 					deps[layer]++;
 
@@ -1061,8 +1062,8 @@ struct Adam
 		const Settings& s = t->optimizerSettings;
 		m = m * s.beta1 + (1.f - s.beta1) * dtheta;
 		v = v * s.beta2 + (1.f - s.beta2) * dtheta * dtheta;
-		const float biasCorr1 = m * (1.f - std::pow<float>(s.beta1, t->m_iter));
-		const float biasCorr2 = v * (1.f - std::pow<float>(s.beta2, t->m_iter));
+		const float biasCorr1 = m * (1.f - std::powf(s.beta1, static_cast<float>(t->m_iter)));
+		const float biasCorr2 = v * (1.f - std::pow<float>(s.beta2, static_cast<float>(t->m_iter)));
 		const float dx = -t->lr * biasCorr1 / (std::sqrt(biasCorr2) + s.eps);
 		theta += dx;
 	}

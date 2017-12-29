@@ -32,7 +32,8 @@ public:
 	virtual void doAction(const Tensor& action) = 0;
 	virtual void getLegalActions(Tensor& legalActions) const = 0;
 	virtual void reset() = 0;
-	virtual Game* clone() const = 0;
+	virtual unique_ptr<Game> clone() const = 0;
+	virtual void copyFrom(const Game& other) = 0;
 	virtual void render() {}
 
 	void doAction(uint32_t actionIndex)
@@ -105,11 +106,16 @@ public:
 		m_turn = 0;
 	}
 
-	Game* clone() const override
+	unique_ptr<Game> clone() const override
 	{
-		Connect4* copy = new Connect4(*this);
-		return copy;
+		return make_unique<Connect4>(*this);
 	}
+
+	void copyFrom(const Game& other) override
+	{
+		*this = static_cast<const Connect4&>(other);
+	}
+
 
 	void render() override
 	{
@@ -217,7 +223,7 @@ class Player
 public:
 	virtual void beginGame() = 0;
 	virtual void notifyGameAction(uint32_t action) = 0;
-	virtual uint32_t chooseAction(Game* game) = 0;
+	virtual uint32_t chooseAction(const Game& game) = 0;
 	virtual void endGame(float reward) = 0;
 	virtual void saveAndClearReplayBuffer(ostream& os) = 0;
 };
@@ -310,35 +316,35 @@ class MCTSPlayer : public Player
 public:
 	static const int MAX_ACTION_COUNT = 10;
 
-	MCTSPlayer(MCTSModel* model, int player, const MCTSConfig& config) : m_model(model), m_player(player), m_config(config) 
+	MCTSPlayer(MCTSModel* model, int player, const Game& game, const MCTSConfig& config) : m_model(model), m_player(player), m_config(config)
 	{
+		m_game = game.clone();
 	}
 
 
 	void beginGame() override
 	{
 		m_currentNode = nullptr;
-		m_replayBufferStartIndex = m_replayBuffer.turns.size();
+		m_replayBufferStartIndex = static_cast<uint32_t>(m_replayBuffer.turns.size());
 	}
 
-	uint32_t chooseAction(Game* game) override
+	uint32_t chooseAction(const Game& game) override
 	{
-		m_actionCount = game->getActionCount(); // cache once
+		m_actionCount = game.getActionCount(); // cache once
 
 		if (!m_currentNode)
 			m_currentNode = createNode();
 
 		for (int i = 0; i < m_config.searchIterations; i++)
 		{
-			Game* gameCopy = game->clone();
-			searchMove(gameCopy, m_currentNode, true);
-			delete gameCopy; //TODO: pool?
+			m_game->copyFrom(game);
+			searchMove(m_game.get(), m_currentNode, true);
 		}
 
 		Tensor policy;
 		calcPolicy(game, m_currentNode, policy);
 
-		m_replayBuffer.turns.push_back({ game->getState(m_player), policy, Tensor({1,1,1}) });
+		m_replayBuffer.turns.push_back({ game.getState(m_player), policy, Tensor({1,1,1}) });
 
 		uint32_t actionIndex = randChoice(policy);
 		return actionIndex;
@@ -397,7 +403,7 @@ private:
 		Link links[MCTSPlayer::MAX_ACTION_COUNT];
 	};
 
-	void calcPolicy(const Game* game, const Node* node, Tensor& outPolicy) const
+	void calcPolicy(const Game& game, const Node* node, Tensor& outPolicy) const
 	{
 		// sum(N(s,b)) for all b
 		float nsum = 0.f;
@@ -415,7 +421,7 @@ private:
 		}
 
 		// if far in game (after tau turn) max out policy to (0, ..., 0, 1, 0, ..., 0) form
-		if (game->getTurn() >= m_config.changeTauTurn)
+		if (game.getTurn() >= m_config.changeTauTurn)
 		{
 			uint32_t maxActionIndex = argmax(outPolicy);
 			outPolicy.setZero();
@@ -527,6 +533,7 @@ private:
 		delete node;
 	}
 
+	unique_ptr<Game> m_game;
 	MCTSModel* m_model;
 	int m_player;
 	uint32_t m_actionCount;
@@ -537,7 +544,7 @@ private:
 };
 
 
-static int playNGames(Game* game, Player* player0, Player* player1, uint32_t gameCount = 1)
+static int playNGames(Game& game, Player* player0, Player* player1, uint32_t gameCount = 1)
 {
 	int player0Wins = 0;
 
@@ -546,18 +553,18 @@ static int playNGames(Game* game, Player* player0, Player* player1, uint32_t gam
 		player0->beginGame();
 		player1->beginGame();
 
-		game->reset();
-		while (!game->isFinished())
+		game.reset();
+		while (!game.isFinished())
 		{
-			Player* current = (game->getCurrentPlayer() == 0) ? player0 : player1;
+			Player* current = (game.getCurrentPlayer() == 0) ? player0 : player1;
 			uint32_t action = current->chooseAction(game);
-			game->doAction(action);
+			game.doAction(action);
 			player0->notifyGameAction(action);
 			player1->notifyGameAction(action);
 		}
 
-		const float reward0 = game->getReward(0);
-		const float reward1 = game->getReward(1);
+		const float reward0 = game.getReward(0);
+		const float reward1 = game.getReward(1);
 
 		player0->endGame(reward0);
 		player1->endGame(reward1);
@@ -675,9 +682,9 @@ public:
 			if (loadBestModel(model.get(), m_config))
 				log("best model loaded");
 
-			MCTSPlayer player0(model.get(), 0, m_config.mctsConfig);
-			MCTSPlayer player1(model.get(), 1, m_config.mctsConfig);
-			playNGames(game, &player0, &player1, m_config.gamesPerReplayFile);
+			MCTSPlayer player0(model.get(), 0, *game, m_config.mctsConfig);
+			MCTSPlayer player1(model.get(), 1, *game, m_config.mctsConfig);
+			playNGames(*game, &player0, &player1, m_config.gamesPerReplayFile);
 
 			checkCreateDir(m_config.replayOutputPath);
 			fs::path filename = fs::path(m_config.replayOutputPath) / dateTimeNow();
@@ -692,8 +699,6 @@ public:
 
 			std::this_thread::sleep_for(10ms);
 		}
-
-		delete game;
 	}
 };
 
@@ -758,8 +763,8 @@ public:
 				{
 					log("optimization loop ", i , " of ", iterations);
 				}
-
-				int sample = randUniform(0, buffer.turns.size() - 1);
+				
+				int sample = randUniform(0, (int)buffer.turns.size() - 1);
 				t.train({ &buffer.turns[sample].state }, { &buffer.turns[sample].policy, &buffer.turns[sample].reward });
 			}
 
@@ -805,9 +810,9 @@ public:
 				candidateModel->model->load(file);
 				log("evaluating:", file);
 
-				MCTSPlayer player0(candidateModel.get(), 0, m_config.mctsConfig);
-				MCTSPlayer player1(bestModel.get(), 1, m_config.mctsConfig);
-				int player0Wins = playNGames(game, &player0, &player1, m_config.gamesPerEvaluation);
+				MCTSPlayer player0(candidateModel.get(), 0, *game, m_config.mctsConfig);
+				MCTSPlayer player1(bestModel.get(), 1, *game, m_config.mctsConfig);
+				int player0Wins = playNGames(*game, &player0, &player1, m_config.gamesPerEvaluation);
 
 				float winRate = player0Wins / static_cast<float>(m_config.gamesPerEvaluation);
 				log("winrate: ", winRate);
@@ -827,8 +832,6 @@ public:
 				std::this_thread::sleep_for(5s);
 			}
 		}
-
-		delete game;
 	}
 };
 
