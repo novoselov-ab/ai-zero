@@ -90,6 +90,7 @@ public:
 				return;
 			}
 		}
+		
 		assert(false);
 	}
 
@@ -106,8 +107,7 @@ public:
 
 	Game* clone() const override
 	{
-		Connect4* copy = new Connect4();
-		*copy = *this;
+		Connect4* copy = new Connect4(*this);
 		return copy;
 	}
 
@@ -129,7 +129,7 @@ public:
 		}
 		//std::cout << "State p0:" << m_stateP0;
 		//std::cout << "State p1:" << m_stateP1;
-		std::cout << "=========================================================\n";
+		std::cout << "=========================================================" << std::endl;
 	}
 
 	Connect4()
@@ -242,7 +242,7 @@ struct ReplayBuffer
 
 	ReplayBuffer()
 	{
-		turns.reserve(1 << 31);
+		turns.reserve(1 << 24);
 	}
 
 	void save(ostream& os)
@@ -274,7 +274,7 @@ struct MCTSConfig
 	int cPUCT = 5;
 	float noiseEps = 0.25f;
 	float dirichletAlpha = 0.03f;
-	int changeTauTurn = 10;
+	uint32_t changeTauTurn = 10;
 };
 
 struct OptimizerConfig
@@ -288,14 +288,19 @@ struct GlobalConfig
 {
 	MCTSConfig mctsConfig;
 	function<unique_ptr<MCTSModel>(const Game*)> buildModelFn;
-	Game* game;
+	const Game* game;
 
 	string modelOutputPath = "./models";
 	string bestModelFilename = "best.model";
 
 	string replayOutputPath = "./replays";
 	string replayFilePrefix = "replays_";
-	uint32_t gamesPerReplayFile = 1;
+	uint32_t gamesPerReplayFile = 10;
+
+	string logPath = "./logs";
+
+	uint32_t gamesPerEvaluation = 100;
+	float replaceRate = 0.55f;
 
 	OptimizerConfig optimizerConfig;
 };
@@ -335,7 +340,8 @@ public:
 
 		m_replayBuffer.turns.push_back({ game->getState(m_player), policy, Tensor({1,1,1}) });
 
-		return randChoice(policy);
+		uint32_t actionIndex = randChoice(policy);
+		return actionIndex;
 	}
 
 	void notifyGameAction(uint32_t action) override
@@ -387,7 +393,6 @@ private:
 	struct Node
 	{
 		Node() : isLeaf(true), links{ 0 } {}
-
 		bool isLeaf;
 		Link links[MCTSPlayer::MAX_ACTION_COUNT];
 	};
@@ -489,8 +494,8 @@ private:
 		}
 
 		// calculating V = Q + U and taking argmax(V)
-		float maxV = numeric_limits<float>::min();
-		int maxIndex = 0;
+		float maxV = -numeric_limits<float>::max();
+		int maxIndex = -1;
 		for (uint32_t i = 0; i < m_actionCount; i++)
 		{
 			float p = node->links[i].p;
@@ -498,14 +503,16 @@ private:
 				p = (1 - m_config.noiseEps) * p + m_config.noiseEps * pDirichlet[i];
 			float u = m_config.cPUCT * p * nsum / (1.f + node->links[i].n);
 			float enemyFlip = (game->getCurrentPlayer() == m_player) ? 1.0f : -1.0f;
-			float v = (node->links[i].q * enemyFlip + u) * legalActions[i];
-			if (v > maxV)
+			float v = (node->links[i].q * enemyFlip + u);
+			if (v > maxV && legalActions[i] > 0.f)
 			{
 				maxV = v;
 				maxIndex = i;
 			}
 		}
 
+		assert(maxIndex >= 0);
+		assert(legalActions[maxIndex] > 0.f);
 		return maxIndex;
 	}
 
@@ -530,8 +537,10 @@ private:
 };
 
 
-static void playNGames(Game* game, Player* player0, Player* player1, uint32_t gameCount = 1)
+static int playNGames(Game* game, Player* player0, Player* player1, uint32_t gameCount = 1)
 {
+	int player0Wins = 0;
+
 	for (uint32_t i = 0; i < gameCount; i++)
 	{
 		player0->beginGame();
@@ -547,50 +556,39 @@ static void playNGames(Game* game, Player* player0, Player* player1, uint32_t ga
 			player1->notifyGameAction(action);
 		}
 
-		player0->endGame(game->getReward(0));
-		player1->endGame(game->getReward(1));
+		const float reward0 = game->getReward(0);
+		const float reward1 = game->getReward(1);
+
+		player0->endGame(reward0);
+		player1->endGame(reward1);
+
+		if (reward0 > reward1)
+			player0Wins++;
 	}
+
+	return player0Wins;
 }
 
-class SelfPlayWorker
+void checkCreateDir(fs::path dirPath)
 {
-public:
-	static void run(const GlobalConfig& config)
-	{
-		// model
-		auto model = config.buildModelFn(config.game);
+	if (!fs::exists(dirPath))
+		fs::create_directory(dirPath);
+}
 
-		for (int i = 0; i < 2; i++)
-		{
-			MCTSPlayer player0(model.get(), 0, config.mctsConfig);
-			MCTSPlayer player1(model.get(), 1, config.mctsConfig);
-			playNGames(config.game, &player0, &player1, config.gamesPerReplayFile);
-
-			if(!fs::exists(config.replayOutputPath))
-				fs::create_directory(config.replayOutputPath);
-
-			fs::path filename = fs::path(config.replayOutputPath) / dateTimeNow();
-			filename += ".bin";
-			{
-				ofstream ofs(filename, ifstream::out | ios::binary);
-				player0.saveAndClearReplayBuffer(ofs);
-				player1.saveAndClearReplayBuffer(ofs);
-			}
-		}
-	}
-};
-
-static void loadBestModel(MCTSModel* model, const GlobalConfig& config)
+static bool loadBestModel(MCTSModel* model, const GlobalConfig& config)
 {
 	fs::path p = config.modelOutputPath;
 	p /= config.bestModelFilename;
-	assert(fs::exists(p));
+	if (!fs::exists(p))
+		return false;
 	model->model->load(p);
+	return true;
 }
 
 static void saveAsBestModel(MCTSModel* model, const GlobalConfig& config)
 {
 	fs::path p = config.modelOutputPath;
+	checkCreateDir(p);
 	p /= config.bestModelFilename;
 	model->model->save(p);
 }
@@ -598,6 +596,7 @@ static void saveAsBestModel(MCTSModel* model, const GlobalConfig& config)
 static void saveModel(MCTSModel* model, const GlobalConfig& config)
 {
 	fs::path p = config.modelOutputPath;
+	checkCreateDir(p);
 	p /= dateTimeNow();
 	p += ".model";
 	model->model->save(p);
@@ -611,60 +610,225 @@ static set<string, greater<string>> getDateDescendingSortedFiles(const fs::path 
 	return s;
 }
 
-class OptimizeWorker
+class Worker
 {
 public:
-	static void run(const GlobalConfig& config)
+	Worker(const string& name, GlobalConfig& config) : m_config(config)
+	{
+		fs::path p = config.logPath;
+		checkCreateDir(p);
+		p /= name;
+		p += ".log";
+		m_ofs.open(p, ifstream::app);
+	}
+
+	void start()
+	{
+		log("\n[Starting Session]");
+		m_thread = std::thread(&Worker::run, this);
+	}
+
+protected:
+	virtual void run() = 0;
+
+	template <typename T, typename... Ts>
+	void log(T head, Ts... tail)
+	{
+		m_ofs << dateTimeNow() << ":\t";
+		logRecursive(head, tail...);
+	}
+
+	GlobalConfig m_config;
+
+private:
+	template <typename T, typename... Ts>
+	void logRecursive(T head, Ts... tail)
+	{
+		m_ofs << head;
+		logRecursive(tail...);
+	}
+
+	void logRecursive()
+	{
+		m_ofs << "\n";
+		m_ofs.flush();
+	}
+
+	std::ofstream m_ofs;
+	std::thread m_thread;
+};
+
+class SelfPlayWorker : public Worker
+{
+public:
+	SelfPlayWorker(GlobalConfig& config) : Worker("self_play", config) {}
+
+	void run() override
+	{
+		// model
+		auto model = m_config.buildModelFn(m_config.game);
+		auto game = m_config.game->clone();
+
+		while (1)
+		{
+			log("starting iteration");
+			if (loadBestModel(model.get(), m_config))
+				log("best model loaded");
+
+			MCTSPlayer player0(model.get(), 0, m_config.mctsConfig);
+			MCTSPlayer player1(model.get(), 1, m_config.mctsConfig);
+			playNGames(game, &player0, &player1, m_config.gamesPerReplayFile);
+
+			checkCreateDir(m_config.replayOutputPath);
+			fs::path filename = fs::path(m_config.replayOutputPath) / dateTimeNow();
+			filename += ".bin";
+			{
+				ofstream ofs(filename, ifstream::out | ios::binary);
+				player0.saveAndClearReplayBuffer(ofs);
+				player1.saveAndClearReplayBuffer(ofs);
+
+				log("saved replay: ", filename);
+			}
+
+			std::this_thread::sleep_for(10ms);
+		}
+
+		delete game;
+	}
+};
+
+class OptimizeWorker : public Worker
+{
+public:
+	OptimizeWorker(GlobalConfig& config) : Worker("optimizer", config) {}
+
+	void run() override
 	{
 		// build model template
-		auto model = config.buildModelFn(config.game);
+		auto model = m_config.buildModelFn(m_config.game);
 
 		// init trainer
 		AdamTrainer t;
 		t.lr = 0.001f;
-		t.batchSize = config.optimizerConfig.batchSize;
+		t.batchSize = m_config.optimizerConfig.batchSize;
 		t.init(model->model.get());
 
 		while (1)
 		{
+			log("starting iteration");
+
 			// load best model
-			loadBestModel(model.get(), config);
+			if (!loadBestModel(model.get(), m_config))
+			{
+				log("no best model yet, starting with random");
+			}
 
 			// load replay buffer (load most recent files till buffer is full, remove others)
 			ReplayBuffer buffer;
-			set<string, greater<string>> sortedFiles = getDateDescendingSortedFiles(config.replayOutputPath);
-			for (auto& file : sortedFiles)
+
+			while (1)
 			{
-				if (buffer.turns.size() < config.optimizerConfig.samplesCount)
+				auto sortedFiles = getDateDescendingSortedFiles(m_config.replayOutputPath);
+				for (auto& file : sortedFiles)
 				{
-					ifstream ifs(file, ifstream::in | ios::binary);
-					buffer.load(ifs);
+					if (buffer.turns.size() < m_config.optimizerConfig.samplesCount)
+					{
+						ifstream ifs(file, ifstream::in | ios::binary);
+						buffer.load(ifs);
+					}
+					else
+					{
+						fs::remove(file);
+					}
+					log("added replays from file", file);
 				}
-				else
-				{
-					fs::remove(file);
-				}
+
+				if (!buffer.turns.empty())
+					break;
+
+				std::this_thread::sleep_for(1s); // wait and iterate till the first file
 			}
 
 			// optimize
-			for (uint32_t i = 0; i < config.optimizerConfig.iterationCount; i++)
+			log("starting optimization");
+			const uint32_t iterations = m_config.optimizerConfig.iterationCount;
+			for (uint32_t i = 0; i < iterations; i++)
 			{
-				int sample = randUniform(0, buffer.turns.size());
+				if (i % 100 == 0)
+				{
+					log("optimization loop ", i , " of ", iterations);
+				}
+
+				int sample = randUniform(0, buffer.turns.size() - 1);
 				t.train({ &buffer.turns[sample].state }, { &buffer.turns[sample].policy, &buffer.turns[sample].reward });
 			}
 
 			// save model
-			saveModel(model.get(), config);
+			fs::path p = m_config.modelOutputPath;
+			checkCreateDir(p);
+			p /= dateTimeNow();
+			p += ".model";
+			model->model->save(p);
+			log("model saved: ", p);
+
+			std::this_thread::sleep_for(100ms);
 		}
 	}
 };
 
-class EvaluateWorker
+class EvaluateWorker : public Worker
 {
 public:
-	static void run(MCTSModel* model, const GlobalConfig& config)
-	{
+	EvaluateWorker(GlobalConfig& config) : Worker("evaluate", config) {}
 
+	void run() override
+	{
+		auto game = m_config.game->clone();
+
+		while (1)
+		{
+			log("starting iteration");
+
+			// build and load best model
+			auto bestModel = m_config.buildModelFn(m_config.game);
+			if (!loadBestModel(bestModel.get(), m_config))
+			{
+				log("no best model yet, evaluating against random model");
+			}
+
+			auto candidateModel = m_config.buildModelFn(m_config.game);
+			auto sortedFiles = getDateDescendingSortedFiles(m_config.modelOutputPath);
+			for (auto& file : sortedFiles)
+			{
+				if((fs::path(file)).filename() == m_config.bestModelFilename)
+					continue;
+				candidateModel->model->load(file);
+				log("evaluating:", file);
+
+				MCTSPlayer player0(candidateModel.get(), 0, m_config.mctsConfig);
+				MCTSPlayer player1(bestModel.get(), 1, m_config.mctsConfig);
+				int player0Wins = playNGames(game, &player0, &player1, m_config.gamesPerEvaluation);
+
+				float winRate = player0Wins / static_cast<float>(m_config.gamesPerEvaluation);
+				log("winrate: ", winRate);
+				if (winRate >= m_config.replaceRate)
+				{
+					log("New best model: ", file, " win rate:", winRate);
+					saveAsBestModel(candidateModel.get(), m_config);
+				}
+
+				fs::remove(file);
+				break;
+			}
+			
+			if (sortedFiles.size() <= 1)
+			{
+				log("no files to evaluate, waiting");
+				std::this_thread::sleep_for(5s);
+			}
+		}
+
+		delete game;
 	}
 };
 
@@ -734,53 +898,16 @@ int main()
 	config.buildModelFn = buildModel1;
 	config.game = &game;
 
-	SelfPlayWorker w;
-	w.run(config);
-
-	OptimizeWorker o;
-	o.run(config);
-
-#if 0
-	Dim inputDim = { 4,4,1 };
-	auto input = make_shared<Input>(inputDim);
-	auto x = (*make_shared<Conv>(16, 3, 3, 2, 1))(input);
-	x = (*make_shared<Relu>())(x);
-	x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
-	x = (*make_shared<Relu>())(x);
-	x = (*make_shared<Dense>(32))(x);
-	x = (*make_shared<Dense>(10))(x);
-	auto output = make_shared<Softmax>();
-	auto loss = make_shared<CrossEntropy>();
-	x = (*output)(x);
-	x = (*loss)(x);
-
-	Model model({ input }, { loss });
-
-	AdamTrainer t;
-	t.l2Decay = 0;
-	t.lr = 0.001f;
-	t.init(&model);
-	
-	Tensor X, Y;
-	X.initRand(inputDim);
-	Y.initZero({ 1, 1, 10 });
-	Y.data[2] = 1;
-
-	model.forward(X);
-	std::cout << output->Y;
-
-	const float epochs = 50;
-	for (int i = 0; i < epochs; i++)
 	{
-		t.train(X, Y);
-		std::cout << "Loss:" << t.getLoss() << "\n";
+		SelfPlayWorker selfPlay(config);
+		selfPlay.start();
+		OptimizeWorker optimizer(config);
+		optimizer.start();
+		EvaluateWorker evaluate(config);
+		evaluate.start();
 
+		getchar();
 	}
-	model.forward(X);
-	std::cout << output->Y;
-#endif
-
-	//getchar();
 
 	return 0;
 }
