@@ -5,7 +5,7 @@
 void checkCreateDir(fs::path dirPath)
 {
 	if (!fs::exists(dirPath))
-		fs::create_directory(dirPath);
+		fs::create_directories(dirPath);
 }
 
 static set<string, greater<string>> getDateDescendingSortedFiles(const fs::path& p)
@@ -208,12 +208,12 @@ private:
 		return false;
 	}
 
-	int m_currentPlayer;
-	bool m_running;
-	int m_winner;
-	Tensor m_stateP0;
-	Tensor m_stateP1;
-	uint32_t m_turn;
+	int			m_currentPlayer;
+	bool		m_running;
+	int			m_winner;
+	Tensor		m_stateP0;
+	Tensor		m_stateP1;
+	uint32_t	m_turn;
 };
 
 class Player
@@ -289,16 +289,18 @@ struct GlobalConfig
 	function<unique_ptr<MCTSModel>(const Game*)> buildModelFn;
 	const Game* game;
 
-	string modelOutputPath = "./models";
-	string bestModelFilename = "best.model";
+	string candidateModelsPath = "./output/models/candidates";
+	string bestModelsPath = "./output/models/best";
 
-	string replayOutputPath = "./replays";
+	string replayOutputPath = "./output/replays";
 	uint32_t gamesPerReplayFile = 10;
 
-	string logPath = "./logs";
+	string logPath = "./output/logs";
 
 	uint32_t gamesPerEvaluation = 100;
 	float replaceRate = 0.55f;
+
+	uint32_t gamesPerValidation = 100;
 
 	OptimizerConfig optimizerConfig;
 };
@@ -309,23 +311,38 @@ struct MCTSModel
 	Layer*				policyOutput;
 	Layer*				valueOutput;
 
-	bool loadBest(GlobalConfig& config)
+	bool loadBest(GlobalConfig& config, fs::path& loadedFile = fs::path())
 	{
-		fs::path p = config.modelOutputPath;
-		p /= config.bestModelFilename;
-		if (!fs::exists(p))
+		auto sortedFiles = getDateDescendingSortedFiles(config.bestModelsPath);
+		if (sortedFiles.empty())
 			return false;
-		model->load(p);
-		return true;
+		for (const auto& file : sortedFiles)
+		{
+			model->load(file);
+			loadedFile = file;
+			return true;
+		}
 	}
 
 	void saveAsBest(const GlobalConfig& config) const
 	{
-		fs::path p = config.modelOutputPath;
+		fs::path p = config.bestModelsPath;
 		checkCreateDir(p);
-		p /= config.bestModelFilename;
+		p /= dateTimeNow();
+		p += "-best.model";
 		model->save(p);
 	}
+
+	fs::path saveAsCandidate(const GlobalConfig& config) const
+	{
+		fs::path p = config.candidateModelsPath;
+		checkCreateDir(p);
+		p /= dateTimeNow();
+		p += ".model";
+		model->save(p);
+		return p;
+	}
+
 };
 
 class MCTSPlayer : public Player
@@ -455,10 +472,17 @@ private:
 
 		if (node->isLeaf)
 		{
-			float leafV = expand(game, node);
-			if (game->getCurrentPlayer() != m_player)
-				leafV = -leafV;
-			return leafV;
+			if (m_model)
+			{
+				float leafV = expandWithModel(game, node);
+				if (game->getCurrentPlayer() != m_player)
+					leafV = -leafV;
+				return leafV;
+			}
+			else
+			{
+				expandUniform(game, node);
+			}
 		}
 
 		int actionIndex = selectAction(game, node, isRootNode);
@@ -476,7 +500,7 @@ private:
 		return leafV;
 	}
 
-	float expand(const Game* game, Node* node)
+	float expandWithModel(const Game* game, Node* node)
 	{
 		const Tensor& state = game->getState(game->getCurrentPlayer());
 		m_model->model->forward(state);
@@ -490,6 +514,16 @@ private:
 		node->isLeaf = false;
 
 		return value;
+	}
+
+	void expandUniform(const Game* game, Node* node)
+	{
+		for (uint32_t i = 0; i < m_actionCount; i++)
+		{
+			node->links[i].p = 1.0f / m_actionCount;
+			node->links[i].child = createNode();
+		}
+		node->isLeaf = false;
 	}
 
 	int selectAction(const Game* game, const Node* node, bool isRootNode) const
@@ -610,7 +644,7 @@ public:
 		assert(!m_working);
 		log("\n[Starting Session]");
 		m_working = true;
-		m_thread = std::thread(&Worker::run, this);
+		m_thread = thread(&Worker::run, this);
 	}
 
 	void stop()
@@ -634,7 +668,7 @@ protected:
 	}
 
 	GlobalConfig		m_config;
-	std::atomic<bool>	m_working;
+	atomic<bool>		m_working;
 
 private:
 	template <typename T, typename... Ts>
@@ -650,8 +684,8 @@ private:
 		m_ofs.flush();
 	}
 
-	std::ofstream		m_ofs;
-	std::thread			m_thread;
+	ofstream			m_ofs;
+	thread				m_thread;
 };
 
 class SelfPlayWorker : public Worker
@@ -686,7 +720,7 @@ public:
 				log("saved replay: ", filename);
 			}
 
-			std::this_thread::sleep_for(10ms);
+			this_thread::sleep_for(10ms);
 		}
 	}
 };
@@ -694,7 +728,7 @@ public:
 class OptimizeWorker : public Worker
 {
 public:
-	OptimizeWorker(GlobalConfig& config) : Worker("optimizer", config) {}
+	OptimizeWorker(GlobalConfig& config) : Worker("optimization", config) {}
 
 	void run() override
 	{
@@ -723,7 +757,7 @@ public:
 			while (1)
 			{
 				auto sortedFiles = getDateDescendingSortedFiles(m_config.replayOutputPath);
-				for (auto& file : sortedFiles)
+				for (const auto& file : sortedFiles)
 				{
 					if (buffer.turns.size() < m_config.optimizerConfig.samplesCount)
 					{
@@ -740,7 +774,7 @@ public:
 				if (!buffer.turns.empty())
 					break;
 
-				std::this_thread::sleep_for(1s); // wait and iterate till the first file
+				this_thread::sleep_for(1s); // wait and iterate till the first file
 			}
 
 			// optimize
@@ -757,15 +791,11 @@ public:
 				t.train({ &buffer.turns[sample].state }, { &buffer.turns[sample].policy, &buffer.turns[sample].reward });
 			}
 
-			// save model
-			fs::path p = m_config.modelOutputPath;
-			checkCreateDir(p);
-			p /= dateTimeNow();
-			p += ".model";
-			model->model->save(p);
+			// save model as candidate
+			fs::path p = model->saveAsCandidate(m_config);
 			log("model saved: ", p);
 
-			std::this_thread::sleep_for(100ms);
+			this_thread::sleep_for(100ms);
 		}
 	}
 };
@@ -773,7 +803,7 @@ public:
 class EvaluateWorker : public Worker
 {
 public:
-	EvaluateWorker(GlobalConfig& config) : Worker("evaluate", config) {}
+	EvaluateWorker(GlobalConfig& config) : Worker("evaluation", config) {}
 
 	void run() override
 	{
@@ -791,11 +821,9 @@ public:
 			}
 
 			auto candidateModel = m_config.buildModelFn(m_config.game);
-			auto sortedFiles = getDateDescendingSortedFiles(m_config.modelOutputPath);
-			for (auto& file : sortedFiles)
+			auto sortedFiles = getDateDescendingSortedFiles(m_config.candidateModelsPath);
+			for (const auto& file : sortedFiles)
 			{
-				if((fs::path(file)).filename() == m_config.bestModelFilename)
-					continue;
 				candidateModel->model->load(file);
 
 				MCTSPlayer player0(candidateModel.get(), 0, *game, m_config.mctsConfig);
@@ -817,10 +845,52 @@ public:
 				break;
 			}
 			
-			if (sortedFiles.size() <= 1)
+			if (sortedFiles.empty())
 			{
 				log("no files to evaluate, waiting");
-				std::this_thread::sleep_for(5s);
+				this_thread::sleep_for(5s);
+			}
+		}
+	}
+};
+
+class ValidationWorker : public Worker
+{
+public:
+	ValidationWorker(GlobalConfig& config) : Worker("validation", config) {}
+
+	void run() override
+	{
+		auto game = m_config.game->clone();
+
+		fs::path lastBestModel;
+
+		while (m_working)
+		{
+			log("starting iteration");
+
+			// build and load best model
+			auto bestModel = m_config.buildModelFn(m_config.game);
+			fs::path bestModelFile;
+			if (!bestModel->loadBest(m_config, bestModelFile) || bestModelFile == lastBestModel)
+			{
+				log("no best model yet");
+				this_thread::sleep_for(10s);
+				continue;
+			}
+			lastBestModel = bestModelFile;
+
+			const vector<int> iterations = { 100, 1000, 10000 }; // TODO: config
+			for (auto iters : iterations)
+			{
+				MCTSConfig mctsCustom;
+				mctsCustom.searchIterations = 1000;
+				MCTSPlayer player0(bestModel.get(), 0, *game, m_config.mctsConfig);
+				MCTSPlayer player1(nullptr, 1, *game, m_config.mctsConfig);
+				int player0Wins = playNGames(*game, &player0, &player1, m_config.gamesPerValidation);
+
+				float winRate = player0Wins / static_cast<float>(m_config.gamesPerEvaluation);
+				log("validation result: ", bestModelFile, " iters: ", iters, " win rate:", winRate);
 			}
 		}
 	}
@@ -896,7 +966,8 @@ int main()
 		SelfPlayWorker selfPlay(config);
 		OptimizeWorker optimizer(config);
 		EvaluateWorker evaluate(config);
-		std::vector<Worker*> workers = { &selfPlay, &optimizer, &evaluate };
+		ValidationWorker validate(config);
+		vector<Worker*> workers = { &selfPlay, &optimizer, &evaluate, &validate };
 
 		for (auto w : workers) w->start();
 
