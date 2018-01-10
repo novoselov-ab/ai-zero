@@ -933,10 +933,10 @@ public:
 			const vector<int> iterations = { 1000, 10000, 20000 }; // TODO: config
 			for (auto iters : iterations)
 			{
-				MCTSConfig mctsCustom;
-				mctsCustom.searchIterations = 1000;
 				MCTSPlayer player0(bestModel.get(), 0, *game, m_config.mctsConfig);
-				MCTSPlayer player1(nullptr, 1, *game, m_config.mctsConfig);
+				MCTSConfig mctsCustom;
+				mctsCustom.searchIterations = iters;
+				MCTSPlayer player1(nullptr, 1, *game, mctsCustom);
 				int player0Wins = playNGames(*this, *game, &player0, &player1, m_config.gamesPerValidation);
 
 				float winRate = player0Wins / static_cast<float>(m_config.gamesPerEvaluation);
