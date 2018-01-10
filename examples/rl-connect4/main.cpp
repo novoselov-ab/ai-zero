@@ -16,6 +16,27 @@ static set<string, greater<string>> getDateDescendingSortedFiles(const fs::path&
 	return s;
 }
 
+struct SimpleTimer
+{
+	SimpleTimer()
+	{
+		m_start = steady_clock::now();
+	}
+
+	int64_t getElapsedMS() const
+	{
+		return duration_cast<milliseconds>(steady_clock::now() - m_start).count();
+	}
+
+	float getElapsedSeconds() const
+	{
+		return getElapsedMS() / 1000.0f;
+	}
+
+private:
+	time_point<steady_clock> m_start;
+};
+
 class Game
 {
 public:
@@ -266,7 +287,7 @@ struct ReplayBuffer
 
 struct MCTSConfig
 {
-	int searchIterations = 10;
+	int searchIterations = 300;
 	int virtualLoss = 3;
 	int cPUCT = 5;
 	float noiseEps = 0.25f;
@@ -276,8 +297,8 @@ struct MCTSConfig
 
 struct OptimizerConfig
 {
-	uint32_t samplesCount = 1000;
-	uint32_t iterationCount = 10;
+	uint32_t samplesCount = 10000;
+	uint32_t iterationCount = 100000;
 	uint32_t batchSize = 8;
 };
 
@@ -293,14 +314,14 @@ struct GlobalConfig
 	string bestModelsPath = "./output/models/best";
 
 	string replayOutputPath = "./output/replays";
-	uint32_t gamesPerReplayFile = 10;
+	uint32_t gamesPerReplayFile = 100;
 
 	string logPath = "./output/logs";
 
-	uint32_t gamesPerEvaluation = 100;
+	uint32_t gamesPerEvaluation = 200;
 	float replaceRate = 0.55f;
 
-	uint32_t gamesPerValidation = 100;
+	uint32_t gamesPerValidation = 200;
 
 	OptimizerConfig optimizerConfig;
 };
@@ -350,7 +371,8 @@ class MCTSPlayer : public Player
 public:
 	static const int MAX_ACTION_COUNT = 10;
 
-	MCTSPlayer(const MCTSModel* model, int player, const Game& game, const MCTSConfig& config) : m_model(model), m_player(player), m_config(config)
+	MCTSPlayer(const MCTSModel* model, int player, const Game& game, const MCTSConfig& config) 
+		: m_model(model), m_player(player), m_config(config), m_nodePoolGrowSize(1 << 12)
 	{
 		m_game = game.clone();
 	}
@@ -573,15 +595,30 @@ private:
 		return maxIndex;
 	}
 
+	// Fast allocating nodes with pool allocator
+	Node* createNode() 
+	{ 
+		if (m_nodePool.empty())
+		{
+			m_allocatedNodePools.push_back(vector<Node>(m_nodePoolGrowSize));
+			auto& newNodes = m_allocatedNodePools.back();
+			for (uint32_t i = 0; i < newNodes.size(); i++)
+			{
+				m_nodePool.push_back(&newNodes[i]);
+			}
+			m_nodePoolGrowSize <<= 1; // next time grow bigger
+		}
+		Node* node = m_nodePool.back(); m_nodePool.pop_back();
+		*node = Node();
+		return node;
+	};
 
-	// TODO: redo with pool allocator
-	Node* createNode() { return new Node(); };
 	void destroyNode(Node* node)
 	{
 		for (int i = 0; i < MAX_ACTION_COUNT; i++)
 			if (node->links[i].child)
 				destroyNode(node->links[i].child);
-		delete node;
+		m_nodePool.push_back(node);
 	}
 
 	unique_ptr<Game> m_game;
@@ -592,13 +629,79 @@ private:
 	MCTSConfig m_config;
 	uint32_t m_replayBufferStartIndex;
 	ReplayBuffer m_replayBuffer;
+	
+	vector<Node*> m_nodePool;
+	list<vector<Node>> m_allocatedNodePools;
+	uint32_t m_nodePoolGrowSize;
 };
 
 
-static int playNGames(Game& game, Player* player0, Player* player1, uint32_t gameCount = 1)
+class Worker
 {
-	int player0Wins = 0;
+public:
+	Worker(const string& name, GlobalConfig& config) : m_config(config), m_working(false)
+	{
+		fs::path p = config.logPath;
+		checkCreateDir(p);
+		p /= name;
+		p += ".log";
+		m_ofs.open(p, ifstream::app);
+	}
 
+	void start()
+	{
+		assert(!m_working);
+		log("==================");
+		log("[Starting Session]");
+		m_working = true;
+		m_thread = thread(&Worker::run, this);
+	}
+
+	void stop()
+	{
+		m_working = false;
+	}
+
+	void join()
+	{
+		m_thread.join();
+	}
+
+	template <typename T, typename... Ts>
+	void log(T head, Ts... tail)
+	{
+		m_ofs << dateTimeNow() << ":\t";
+		logRecursive(head, tail...);
+	}
+
+protected:
+	virtual void run() = 0;
+
+	GlobalConfig		m_config;
+	atomic<bool>		m_working;
+
+private:
+	template <typename T, typename... Ts>
+	void logRecursive(T head, Ts... tail)
+	{
+		m_ofs << head;
+		logRecursive(tail...);
+	}
+
+	void logRecursive()
+	{
+		m_ofs << "\n";
+		m_ofs.flush();
+	}
+
+	ofstream			m_ofs;
+	thread				m_thread;
+};
+
+static int playNGames(Worker& worker, Game& game, Player* player0, Player* player1, uint32_t gameCount = 1)
+{
+	SimpleTimer timer;
+	int player0Wins = 0;
 	for (uint32_t i = 0; i < gameCount; i++)
 	{
 		player0->beginGame();
@@ -624,69 +727,10 @@ static int playNGames(Game& game, Player* player0, Player* player1, uint32_t gam
 			player0Wins++;
 	}
 
+	worker.log("played ", gameCount, " games, took: ", timer.getElapsedSeconds(), "s");
+
 	return player0Wins;
 }
-
-class Worker
-{
-public:
-	Worker(const string& name, GlobalConfig& config) : m_config(config), m_working(false)
-	{
-		fs::path p = config.logPath;
-		checkCreateDir(p);
-		p /= name;
-		p += ".log";
-		m_ofs.open(p, ifstream::app);
-	}
-
-	void start()
-	{
-		assert(!m_working);
-		log("\n[Starting Session]");
-		m_working = true;
-		m_thread = thread(&Worker::run, this);
-	}
-
-	void stop()
-	{
-		m_working = false;
-	}
-
-	void join()
-	{
-		m_thread.join();
-	}
-
-protected:
-	virtual void run() = 0;
-
-	template <typename T, typename... Ts>
-	void log(T head, Ts... tail)
-	{
-		m_ofs << dateTimeNow() << ":\t";
-		logRecursive(head, tail...);
-	}
-
-	GlobalConfig		m_config;
-	atomic<bool>		m_working;
-
-private:
-	template <typename T, typename... Ts>
-	void logRecursive(T head, Ts... tail)
-	{
-		m_ofs << head;
-		logRecursive(tail...);
-	}
-
-	void logRecursive()
-	{
-		m_ofs << "\n";
-		m_ofs.flush();
-	}
-
-	ofstream			m_ofs;
-	thread				m_thread;
-};
 
 class SelfPlayWorker : public Worker
 {
@@ -707,7 +751,7 @@ public:
 
 			MCTSPlayer player0(model.get(), 0, *game, m_config.mctsConfig);
 			MCTSPlayer player1(model.get(), 1, *game, m_config.mctsConfig);
-			playNGames(*game, &player0, &player1, m_config.gamesPerReplayFile);
+			playNGames(*this, *game, &player0, &player1, m_config.gamesPerReplayFile);
 
 			checkCreateDir(m_config.replayOutputPath);
 			fs::path filename = fs::path(m_config.replayOutputPath) / dateTimeNow();
@@ -768,7 +812,7 @@ public:
 					{
 						fs::remove(file);
 					}
-					log("added replays from file", file);
+					log("added replays from file: ", file);
 				}
 
 				if (!buffer.turns.empty())
@@ -779,10 +823,11 @@ public:
 
 			// optimize
 			log("starting optimization");
+			SimpleTimer timer;
 			const uint32_t iterations = m_config.optimizerConfig.iterationCount;
 			for (uint32_t i = 0; i < iterations; i++)
 			{
-				if (i % 100 == 0)
+				if (i % (iterations / 10) == 0)
 				{
 					log("optimization loop ", i , " of ", iterations);
 				}
@@ -790,6 +835,7 @@ public:
 				int sample = randUniform(0, (int)buffer.turns.size() - 1);
 				t.train({ &buffer.turns[sample].state }, { &buffer.turns[sample].policy, &buffer.turns[sample].reward });
 			}
+			log("finished optimization, took: ", timer.getElapsedSeconds(), "s loss:", t.getLoss());
 
 			// save model as candidate
 			fs::path p = model->saveAsCandidate(m_config);
@@ -828,7 +874,7 @@ public:
 
 				MCTSPlayer player0(candidateModel.get(), 0, *game, m_config.mctsConfig);
 				MCTSPlayer player1(bestModel.get(), 1, *game, m_config.mctsConfig);
-				int player0Wins = playNGames(*game, &player0, &player1, m_config.gamesPerEvaluation);
+				int player0Wins = playNGames(*this, *game, &player0, &player1, m_config.gamesPerEvaluation);
 
 				float winRate = player0Wins / static_cast<float>(m_config.gamesPerEvaluation);
 				if (winRate >= m_config.replaceRate)
@@ -841,13 +887,17 @@ public:
 					log("evaluated (fail): ", file, " win rate:", winRate);
 				}
 
-				fs::remove(file);
+				error_code ec;
+				if (!fs::remove(file, ec))
+				{
+					log("remove error: ", ec);
+				}
 				break;
 			}
 			
 			if (sortedFiles.empty())
 			{
-				log("no files to evaluate, waiting");
+				log("no candidates to evaluate, waiting");
 				this_thread::sleep_for(5s);
 			}
 		}
@@ -880,14 +930,14 @@ public:
 			}
 			lastBestModel = bestModelFile;
 
-			const vector<int> iterations = { 100, 1000, 10000 }; // TODO: config
+			const vector<int> iterations = { 1000, 10000, 20000 }; // TODO: config
 			for (auto iters : iterations)
 			{
 				MCTSConfig mctsCustom;
 				mctsCustom.searchIterations = 1000;
 				MCTSPlayer player0(bestModel.get(), 0, *game, m_config.mctsConfig);
 				MCTSPlayer player1(nullptr, 1, *game, m_config.mctsConfig);
-				int player0Wins = playNGames(*game, &player0, &player1, m_config.gamesPerValidation);
+				int player0Wins = playNGames(*this, *game, &player0, &player1, m_config.gamesPerValidation);
 
 				float winRate = player0Wins / static_cast<float>(m_config.gamesPerEvaluation);
 				log("validation result: ", bestModelFile, " iters: ", iters, " win rate:", winRate);
