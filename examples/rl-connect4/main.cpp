@@ -287,7 +287,7 @@ struct ReplayBuffer
 
 struct MCTSConfig
 {
-	int searchIterations = 300;
+	int searchIterations = 200;
 	int virtualLoss = 3;
 	int cPUCT = 5;
 	float noiseEps = 0.25f;
@@ -298,7 +298,7 @@ struct MCTSConfig
 struct OptimizerConfig
 {
 	uint32_t samplesCount = 10000;
-	uint32_t iterationCount = 100000;
+	uint32_t iterationCount = 500000;
 	uint32_t batchSize = 8;
 };
 
@@ -857,7 +857,7 @@ public:
 
 		while (m_working)
 		{
-			log("starting iteration");
+			//log("starting iteration");
 
 			// build and load best model
 			auto bestModel = m_config.buildModelFn(m_config.game);
@@ -917,14 +917,14 @@ public:
 
 		while (m_working)
 		{
-			log("starting iteration");
+			//log("starting iteration");
 
 			// build and load best model
 			auto bestModel = m_config.buildModelFn(m_config.game);
 			fs::path bestModelFile;
 			if (!bestModel->loadBest(m_config, bestModelFile) || bestModelFile == lastBestModel)
 			{
-				log("no best model yet");
+				//log("no best model yet");
 				this_thread::sleep_for(10s);
 				continue;
 			}
@@ -955,9 +955,9 @@ static unique_ptr<MCTSModel> buildModel1(const Game* game)
 	auto input = make_shared<Input>(inputDim);
 	auto x = (*make_shared<Conv>(16, 3, 3, 2, 1))(input);
 	x = (*make_shared<Relu>())(x);
-	x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
-	x = (*make_shared<Relu>())(x);
-	auto split = (*make_shared<Dense>(32))(x);
+	//x = (*make_shared<Conv>(16, 3, 3, 2, 1))(x);
+	//x = (*make_shared<Relu>())(x);
+	auto split = (*make_shared<Dense>(10))(x);
 	auto px = (*make_shared<Dense>(10))(split);
 	px = (*make_shared<Dense>(game->getActionCount()))(px);
 	auto policyOutput = make_shared<Softmax>();
@@ -982,6 +982,7 @@ int main()
 {
 #if LOG_TO_FILE
 	freopen("../output.txt", "w", stdout);
+	freopen("../error.txt", "w", stderr);
 #endif
 
 #if 0
@@ -1020,8 +1021,12 @@ int main()
 		vector<Worker*> workers = { &selfPlay, &optimizer, &evaluate, &validate };
 
 		for (auto w : workers) w->start();
-
-		getchar();
+		
+		while(1)
+		{
+			if (getchar() == 27)
+				break;
+		}
 
 		for (auto w : workers) w->stop();
 		for (auto w : workers) w->join();
