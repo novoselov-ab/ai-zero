@@ -40,6 +40,7 @@ private:
 class Game
 {
 public:
+	virtual ~Game() {};
 	virtual uint32_t getPlayerCount() const = 0;
 	virtual uint32_t getActionCount() const = 0;
 	virtual Dim getStateDim() const = 0;
@@ -240,6 +241,7 @@ private:
 class Player
 {
 public:
+	virtual ~Player() {}
 	virtual void beginGame() = 0;
 	virtual void notifyGameAction(uint32_t action) = 0;
 	virtual uint32_t chooseAction(const Game& game) = 0;
@@ -648,6 +650,8 @@ public:
 		m_ofs.open(p, ifstream::app);
 	}
 
+	virtual ~Worker() {}
+
 	void start()
 	{
 		assert(!m_working);
@@ -1024,7 +1028,7 @@ int main()
 		
 		while(1)
 		{
-			if (getchar() == 27)
+			if (getchar() == 'q')
 				break;
 		}
 
