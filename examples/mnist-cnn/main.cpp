@@ -1,4 +1,4 @@
-#include <ai.h>
+#include "ai.h"
 #include "mnist/mnist_reader.hpp"
 
 #define LOG_TO_FILE 1
