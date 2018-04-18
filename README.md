@@ -1,6 +1,6 @@
 # AI-Zero
 
-This project is attempt to implement AlphaGo Zero paper in one C++ header file without any dependencies except standard library.
+Implementation of an AlphaGo Zero paper in one C++ header file without any dependencies.
 
 To achieve that [include/ai.h](include/ai.h) implements:
 * Basic multilayer neural networks
@@ -13,7 +13,7 @@ To achieve that [include/ai.h](include/ai.h) implements:
 * Monte Carlo Tree Tearch with policy NN
 * Self-play, optimization, evaluation and validation workers
 
-The idea is to have simple, minimal and easy understand implementation. That means that performance was not a priority. Howeever the whole training process runs in parallel on 4 threads (4 workers) and optimizer also spawns some threads, it was easy to do without sacrificing simplicity of the project.
+The idea is to have simple, minimal and easy to understand implementation. That means that performance was not a priority. Howeever the whole training process runs in parallel on 4 threads (4 workers) and optimizer also spawns some threads, it was easy to do that without sacrificing simplicity of the project.
 
 Examples include (all single main.cpp files):
 * Mnist CNN training
@@ -22,7 +22,7 @@ Examples include (all single main.cpp files):
 
 ## Building
 
-Run premake.bat to generate solutions. 
+Run `premake.bat` to generate solutions. 
 
 It was tested only on windows. But since it's just 2 files of code for every example, it should work out of the box. There is no platform specific code.
 
