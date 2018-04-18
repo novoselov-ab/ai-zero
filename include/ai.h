@@ -1,5 +1,6 @@
 #pragma once
 
+#undef NDEBUG
 #include <vector>
 #include <cstdint>
 #include <cmath>

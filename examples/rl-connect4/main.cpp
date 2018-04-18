@@ -345,6 +345,7 @@ struct MCTSModel
 			loadedFile = file;
 			return true;
 		}
+		return false;
 	}
 
 	void saveAsBest(const GlobalConfig& config) const
@@ -434,6 +435,13 @@ public:
 			destroyNode(m_currentNode);
 			m_currentNode = nullptr;
 		}
+
+		int x = 0;
+		for (auto v : m_allocatedNodePools)
+		{
+			x += v.size();
+		}
+		assert(m_nodePool.size() == x);
 	}
 
 	void saveAndClearReplayBuffer(ostream& os)
@@ -489,6 +497,8 @@ private:
 
 	float searchMove(Game* game, Node* node, bool isRootNode = false)
 	{
+		assert(node);
+
 		if (game->isFinished())
 		{
 			return game->getReward(m_player);

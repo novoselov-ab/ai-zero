@@ -1,3 +1,9 @@
+function os.winSdkVersion()
+    local reg_arch = iif( os.is64bit(), "\\Wow6432Node\\", "\\" )
+    local sdk_version = os.getWindowsRegistry( "HKLM:SOFTWARE" .. reg_arch .."Microsoft\\Microsoft SDKs\\Windows\\v10.0\\ProductVersion" )
+    if sdk_version ~= nil then return sdk_version end
+end
+
 workspace "ai-zero"
 	location ( "_build/%{_ACTION}" )
 	architecture "x64"
@@ -16,11 +22,11 @@ workspace "ai-zero"
 		defines { "NDEBUG" }
 		optimize "On"
 
-    filter {"system:macosx"}
-        toolset "gcc"
+	-- vs2017 windows sdk problem workaround:
+	filter {"system:windows", "action:vs*"}
+    	systemversion(os.winSdkVersion() .. ".0")
 
-    filter { "action:gmake" }
-        buildoptions { "-std=c++17" }
+    exceptionhandling("off")
 
     filter {}
 

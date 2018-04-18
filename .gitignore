@@ -34,15 +34,6 @@
 !.git*
 !.editorconfig
 
-# Projects and makefiles
-/build/*.txt
-!/build/**/*.vcproj1
-!/build/**/*.vcxproj
-!/build/**/*.vcxproj.filters
-!/build/**/*.sln
-!/build/**/*.vsprops
-!/build/**/*.snippet
-
 # Specific names
 !README
 !AUTHORS
@@ -50,6 +41,9 @@
 !FAQ
 !VERSION
 !ChangeLog
+
+# premake
+!premake*
 
 # Ignore Unix backup files
 *~
