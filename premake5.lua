@@ -39,11 +39,11 @@ project "gradient-check"
 project "mnist-cnn"
 	kind "ConsoleApp"
 	language "C++"
-	files { "examples/gradient-check/**.cpp" }
+	files { "examples/mnist-cnn/**.cpp" }
 	includedirs { "include" }
 
 project "rl-connect4"
 	kind "ConsoleApp"
 	language "C++"
-	files { "examples/gradient-check/**.cpp" }
+	files { "examples/rl-connect4/**.cpp" }
 	includedirs { "include" }

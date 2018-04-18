@@ -3,9 +3,9 @@
 
 static void gradientCheck(Model& net, const Tensor& x, const Tensor& y)
 {
-	std::vector<OptimizationData> m_optData;
-	m_optData.clear();
-	net.fillOptimizationData(m_optData);
+	std::vector<OptimizationData> optData;
+	optData.clear();
+	net.fillOptimizationData(optData);
 
 	const float loss = net.forward(x, y);
 #if LOG_TO_FILE
@@ -15,14 +15,13 @@ static void gradientCheck(Model& net, const Tensor& x, const Tensor& y)
 
 	const float epsilon = 1e-3f;
 
-	for (uint32_t i = 0; i < m_optData.size(); i++)
+	for (uint32_t i = 0; i < optData.size(); i++)
 	{
-		OptimizationData& optData = m_optData[i];
-
-		for (uint32_t j = 0; j < optData.theta.size(); j++)
+		OptimizationData& opt = optData[i];
+		for (uint32_t j = 0; j < opt.theta.size(); j++)
 		{
-			float& theta = optData.theta[j];
-			float& dtheta = optData.dtheta[j];
+			float& theta = opt.theta[j];
+			float& dtheta = opt.dtheta[j];
 
 			const float x0 = theta;
 
